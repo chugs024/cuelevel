@@ -385,6 +385,26 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let mounts = try Updater.tool("/sbin/mount", [])
         check(!mounts.contains("CueLevel-update-"), "disk image detached after checking")
         print("PASS: update install path attaches, refuses an unsigned app and detaches without hanging")
+
+        // 26. Editor support: zoom window, undo history, real-time preview envelope, fine waveform.
+        var tv = TimeView().zoomed(by: 4, around: 5, duration: 20)
+        check(near(tv.resolved(duration: 20).length, 5) && near(tv.resolved(duration: 20).start, 3.75), "zoom keeps the anchor: \(tv)")
+        tv = tv.panned(by: 100, duration: 20)
+        check(near(tv.resolved(duration: 20).start, 15), "pan stops at the end")
+        check(TimeView().zoomed(by: 0.25, around: 5, duration: 20).length == 0, "zooming out past the cue shows all of it")
+        check(TimeView().zoomed(by: 1e9, around: 5, duration: 20).resolved(duration: 20).length >= TimeView.minimumLength, "zoom limit")
+        var hist = EditHistory<[Int]>()
+        hist.record([1]); hist.record([1, 2])
+        check(hist.undo(current: [1, 2, 3]) == [1, 2] && hist.undo(current: [1, 2]) == [1] && hist.undo(current: [1]) == nil, "undo order")
+        check(hist.redo(current: [1]) == [1, 2] && hist.canRedo, "redo")
+        hist.record([9]); check(!hist.canRedo, "new edit clears redo")
+        let boost = GainRegion(start: 1, end: 3, gain: 6.0206, fadeIn: 0.5, fadeOut: 0.5)
+        check(near(ClipGain.previewScale([boost]), 0.5, 0.001) && ClipGain.previewScale([GainRegion(start: 1, end: 2, gain: -6)]) == 1, "preview scale")
+        let pts = ClipGain.previewPoints([boost])
+        check(pts.count == 5 && near(pts[0].volume, 0.5, 0.001) && near(pts[2].volume, 1, 0.001) && near(pts[2].time, 1.5) && near(pts[4].time, 3), "preview envelope: \(pts)")
+        let fine = try AudioEngine.detailWaveform(speechLike, duration: sectionsAnalysis.info.duration, token: Cancellation())
+        check(fine.count == 1600 && fine.max()! > 0.05, "fine waveform at 200 points per second: \(fine.count)")
+        print("PASS: zoom, undo, preview envelope and fine waveform")
         print("ALL 1.1 TESTS PASSED")
     }
 }

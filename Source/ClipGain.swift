@@ -84,6 +84,71 @@ enum ClipGain {
     }
 }
 
+extension ClipGain {
+    /// Real-time preview through AVAudioMix, whose volume cannot exceed 1: everything is scaled down by the largest boost
+    /// so the balance between sections is exact while boosted sections still fit. Returns that overall scale (0–1].
+    static func previewScale(_ regions: [GainRegion]?) -> Double {
+        1 / max(1, active(regions).map(\.linearGain).max() ?? 1)
+    }
+    /// Volume breakpoints for the preview: (time, volume) pairs; volume changes linearly between consecutive points.
+    static func previewPoints(_ regions: [GainRegion]?) -> [(time: Double, volume: Double)] {
+        let scale = previewScale(regions)
+        var points: [(time: Double, volume: Double)] = [(0, scale)]
+        for r in active(regions) {
+            let g = r.linearGain * scale
+            points += [(r.start, scale), (r.start + r.fadeIn, g), (r.end - r.fadeOut, g), (r.end, scale)]
+        }
+        return points
+    }
+}
+
+/// Undo history for clip gain edits (one step per finished drag or button press).
+struct EditHistory<State: Equatable> {
+    private(set) var undoStack: [State] = []
+    private(set) var redoStack: [State] = []
+    let limit = 200
+    mutating func record(_ previous: State) {
+        if undoStack.last != previous { undoStack.append(previous); if undoStack.count > limit { undoStack.removeFirst() } }
+        redoStack.removeAll()
+    }
+    mutating func undo(current: State) -> State? {
+        guard let previous = undoStack.popLast() else { return nil }
+        redoStack.append(current); return previous
+    }
+    mutating func redo(current: State) -> State? {
+        guard let next = redoStack.popLast() else { return nil }
+        undoStack.append(current); return next
+    }
+    mutating func reset() { undoStack.removeAll(); redoStack.removeAll() }
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+}
+
+/// Visible time window of the zoomable editor.
+struct TimeView: Equatable, Sendable {
+    var start = 0.0
+    var length = 0.0        // 0 = whole cue
+    static let minimumLength = 0.05
+    func resolved(duration: Double) -> (start: Double, length: Double) {
+        guard duration > 0 else { return (0, 1) }
+        let l = length <= 0 ? duration : min(duration, max(Self.minimumLength, length))
+        return (min(max(0, start), duration - l), l)
+    }
+    /// Zooms by `factor` (>1 zooms in) keeping `anchor` (seconds) under the same point.
+    func zoomed(by factor: Double, around anchor: Double, duration: Double) -> TimeView {
+        let (s, l) = resolved(duration: duration)
+        let newLength = min(duration, max(Self.minimumLength, l / max(0.01, factor)))
+        let ratio = l > 0 ? (anchor - s) / l : 0.5
+        var v = TimeView(start: anchor - ratio * newLength, length: newLength >= duration - 1e-9 ? 0 : newLength)
+        let r = v.resolved(duration: duration); v.start = r.start
+        return v
+    }
+    func panned(by seconds: Double, duration: Double) -> TimeView {
+        var v = self; let r = resolved(duration: duration); v.start = r.start + seconds
+        v.start = v.resolved(duration: duration).start; return v
+    }
+}
+
 extension AudioEngine {
     /// Integrated loudness of one section, after the given clip-gain regions (sections shorter than 0.4 s cannot be gated).
     static func sectionLoudness(_ input: URL, info: MediaInfo, start: Double, end: Double, regions: [GainRegion], token: Cancellation) throws -> Double {

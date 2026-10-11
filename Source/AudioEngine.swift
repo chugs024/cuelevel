@@ -336,7 +336,8 @@ final class Cancellation: @unchecked Sendable {
 /// Consumes 48 kHz stereo float frames: waveform peaks plus whole-file correlation and leading/trailing silence.
 final class WaveCollector: @unchecked Sendable {
     static let audible: Float = 0.001   // -60 dBFS
-    var peaks = [Float](repeating: 0, count: 1000)
+    var peaks: [Float]
+    let binCount: Int
     var carry = Data()
     /// Frames consumed (one per 48 kHz sample period).
     var sampleIndex = 0
@@ -344,7 +345,10 @@ final class WaveCollector: @unchecked Sendable {
     var sumL2 = 0.0, sumR2 = 0.0, sumLR = 0.0
     var firstAudible: Int?
     var lastAudible: Int?
-    init(duration: Double) { samplesPerBin = max(1, duration * 48000 / 1000) }
+    init(duration: Double, bins: Int = 1000) {
+        binCount = max(1, bins); peaks = [Float](repeating: 0, count: max(1, bins))
+        samplesPerBin = max(1, duration * 48000 / Double(max(1, bins)))
+    }
     func consume(_ chunk: Data) {
         carry.append(chunk)
         let count = carry.count / 8
@@ -354,7 +358,7 @@ final class WaveCollector: @unchecked Sendable {
                 let r = bytes.loadUnaligned(fromByteOffset: i * 8 + 4, as: Float.self)
                 if l.isFinite && r.isFinite {
                     let v = max(abs(l), abs(r))
-                    let bin = min(999, Int(Double(sampleIndex) / samplesPerBin))
+                    let bin = min(binCount - 1, Int(Double(sampleIndex) / samplesPerBin))
                     peaks[bin] = max(peaks[bin], v)
                     sumL2 += Double(l * l); sumR2 += Double(r * r); sumLR += Double(l * r)
                     if v > Self.audible { if firstAudible == nil { firstAudible = sampleIndex }; lastAudible = sampleIndex }
@@ -471,8 +475,12 @@ enum AudioEngine {
     static func waveform(_ input: URL, duration: Double, token: Cancellation) throws -> [Float] {
         try waveformData(input, duration: duration, token: token).peaks
     }
-    static func waveformData(_ input: URL, duration: Double, token: Cancellation) throws -> WaveCollector {
-        let collector = WaveCollector(duration: duration)
+    /// Fine waveform for zooming in the clip gain editor: 200 peaks per second (5 ms), at most 720 000 points.
+    static func detailWaveform(_ input: URL, duration: Double, token: Cancellation) throws -> [Float] {
+        try waveformData(input, duration: duration, token: token, bins: Int(min(720_000, max(1000, duration * 200)))).peaks
+    }
+    static func waveformData(_ input: URL, duration: Double, token: Cancellation, bins: Int = 1000) throws -> WaveCollector {
+        let collector = WaveCollector(duration: duration, bins: bins)
         try run(["-i",input.path,"-map","0:a:0","-vn","-ac","2","-ar","48000","-f","f32le","pipe:1"], token: token, output: { collector.consume($0) })
         return collector
     }

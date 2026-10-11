@@ -273,10 +273,12 @@ struct ExportReport: Codable {
     }
     func loadPlayer() {
         player.pause(); playing = false; playhead = 0
+        if let sectionStop { player.removeTimeObserver(sectionStop); self.sectionStop = nil }
+        if clipEditing && detailFor != selection { history.reset(); timeView = TimeView(); loadDetailWaveform() }
         guard let job = selected else { player.replaceCurrentItem(with: nil); return }
         if processedPreview && job.output == nil { processedPreview = false }
         let url = processedPreview ? job.output!.url : job.source
-        let item = AVPlayerItem(url: url); player.replaceCurrentItem(with: item); applyVolume()
+        let item = AVPlayerItem(url: url); player.replaceCurrentItem(with: item); applyVolume(); applyPreviewMix()
         playerError = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             if item.status == .failed { Task { @MainActor in self?.status = "Native preview is unavailable for this format. Processing may still be supported; export to WAV for audio preview." } }
         }
@@ -336,16 +338,105 @@ struct ExportReport: Codable {
         } catch { self.error = error.localizedDescription }
     }
     // MARK: Clip gain (1.2)
-    @Published var clipEditing = false
+    @Published var clipEditing = false { didSet { if clipEditing != oldValue { editingChanged() } } }
     @Published var selectedRegion: UUID?
     @Published var measuringSection = false
+    /// Zoom window of the clip gain editor, the fine waveform used when zoomed in, and measured section loudness.
+    @Published var timeView = TimeView()
+    @Published var detailWaveform: [Float] = []
+    @Published var sectionLoudness: [UUID: Double] = [:]
+    @Published private(set) var history = EditHistory<[GainRegion]>()
+    private var detailFor: UUID?
+    private var sectionStop: Any?
     var selectedRegions: [GainRegion] { selected?.clipGain ?? [] }
+    var previewAttenuation: Double { -20 * log10(ClipGain.previewScale(selected?.clipGain)) }
 
     /// Replaces the selected cue's regions (each normalised to the cue's length) and saves the session.
-    func setRegions(_ regions: [GainRegion]) {
+    func setRegions(_ regions: [GainRegion], recordUndo: Bool = true) {
         guard let id = selection, let duration = selected?.analysis?.info.duration, duration > 0 else { return }
-        update(id) { $0.clipGain = regions.map { $0.normalized(duration: duration) }.sorted { $0.start < $1.start } }
-        persist()
+        let before = selectedRegions
+        let after = regions.map { $0.normalized(duration: duration) }.sorted { $0.start < $1.start }
+        guard after != before else { return }
+        if recordUndo { history.record(before) }
+        update(id) { $0.clipGain = after }
+        // Loudness readings are only valid for the edits they were measured with.
+        sectionLoudness = [:]
+        applyPreviewMix(); persist()
+    }
+    func undoRegions() { if let previous = history.undo(current: selectedRegions) { setRegions(previous, recordUndo: false) } }
+    func redoRegions() { if let next = history.redo(current: selectedRegions) { setRegions(next, recordUndo: false) } }
+
+    private func editingChanged() {
+        history.reset(); sectionLoudness = [:]; timeView = TimeView()
+        if clipEditing { loadDetailWaveform() }
+        applyPreviewMix()
+    }
+    /// Loads the 5 ms waveform for zooming, once per cue.
+    func loadDetailWaveform() {
+        guard let job = selected, let info = job.analysis?.info, detailFor != job.id else { return }
+        detailFor = job.id; detailWaveform = []
+        let source = job.source, id = job.id
+        Task {
+            let peaks = try? await Task.detached { try AudioEngine.detailWaveform(source, duration: info.duration, token: Cancellation()) }.value
+            if selection == id, let peaks { detailWaveform = peaks }
+        }
+    }
+    // Zoom and scroll.
+    func zoom(by factor: Double, around anchor: Double? = nil) {
+        let resolved = timeView.resolved(duration: duration)
+        timeView = timeView.zoomed(by: factor, around: anchor ?? (playhead >= resolved.start && playhead <= resolved.start + resolved.length ? playhead : resolved.start + resolved.length / 2), duration: duration)
+    }
+    func pan(by seconds: Double) { timeView = timeView.panned(by: seconds, duration: duration) }
+    func zoomToFit() { timeView = TimeView() }
+    func zoomToSelectedRegion() {
+        guard let r = selectedRegions.first(where: { $0.id == selectedRegion }) else { return }
+        let pad = max(0.2, r.length * 0.15)
+        timeView = TimeView(start: r.start - pad, length: r.length + pad * 2)
+        timeView.start = timeView.resolved(duration: duration).start
+    }
+    /// Plays just the selected section (or from the playhead if none), stopping at its end.
+    func playSelectedSection() {
+        guard let r = selectedRegions.first(where: { $0.id == selectedRegion }) else { playPause(); return }
+        if let sectionStop { player.removeTimeObserver(sectionStop); self.sectionStop = nil }
+        seek(max(0, r.start - 0.5))
+        sectionStop = player.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: r.end + 0.5, preferredTimescale: 600))], queue: .main) { [weak self] in
+            Task { @MainActor in guard let self else { return }; self.player.pause(); self.playing = false
+                if let stop = self.sectionStop { self.player.removeTimeObserver(stop); self.sectionStop = nil } }
+        }
+        player.play(); playing = true
+    }
+    /// Plays the original with the clip gain edits applied in real time (scaled so boosts fit; see previewAttenuation).
+    func applyPreviewMix() {
+        guard let item = player.currentItem else { return }
+        guard clipEditing, !processedPreview, !ClipGain.active(selected?.clipGain).isEmpty else { item.audioMix = nil; return }
+        let points = ClipGain.previewPoints(selected?.clipGain)
+        Task {
+            guard let track = try? await item.asset.loadTracks(withMediaType: .audio).first else { return }
+            let parameters = AVMutableAudioMixInputParameters(track: track)
+            for (index, point) in points.enumerated() {
+                let time = CMTime(seconds: point.time, preferredTimescale: 48000)
+                if index + 1 < points.count, points[index + 1].time > point.time {
+                    let next = points[index + 1]
+                    parameters.setVolumeRamp(fromStartVolume: Float(point.volume), toEndVolume: Float(next.volume),
+                                             timeRange: CMTimeRange(start: time, end: CMTime(seconds: next.time, preferredTimescale: 48000)))
+                } else { parameters.setVolume(Float(point.volume), at: time) }
+            }
+            let mix = AVMutableAudioMix(); mix.inputParameters = [parameters]
+            if player.currentItem === item { item.audioMix = mix }
+        }
+    }
+    /// Measures the selected section's integrated loudness with all current edits applied.
+    func measureSelectedSection() {
+        guard !measuringSection, let job = selected, let info = job.analysis?.info, let r = selectedRegions.first(where: { $0.id == selectedRegion }) else { return }
+        measuringSection = true
+        let source = job.source, regions = selectedRegions
+        Task {
+            defer { measuringSection = false }
+            do {
+                let value = try await Task.detached { try AudioEngine.sectionLoudness(source, info: info, start: r.start, end: r.end, regions: regions, token: Cancellation()) }.value
+                if selectedRegions == regions { sectionLoudness[r.id] = value }
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func addRegion(start: Double, end: Double) {
         guard let duration = selected?.analysis?.info.duration else { return }

@@ -470,9 +470,7 @@ struct ContentView: View {
                 }
             }
             if model.clipEditing, let analysis = job.analysis {
-                ClipGainWaveform(peaks: analysis.waveform, duration: analysis.info.duration, position: model.playhead, regions: job.clipGain ?? [], selected: model.selectedRegion,
-                                 onSeek: model.seek, onCreate: { model.addRegion(start: $0, end: $1) }, onChange: { model.updateRegion($0) }, onSelect: { model.selectedRegion = $0 })
-                ClipGainBar()
+                ClipGainEditor(job: job, analysis: analysis)
             } else {
                 Waveform(peaks: model.currentWaveform, curve: model.currentCurve, target: job.output?.settings.target ?? model.settings.target, position: model.playhead, duration: model.duration, seek: model.seek)
             }
@@ -1025,6 +1023,10 @@ struct LogoMark: View {
                     Button("Check for Updates…") { Task { await updater.check(userInitiated: true) } }.disabled(!updater.canCheck)
                 }
                 CommandGroup(after: .newItem) { Button("Add Files…") { model.addFiles() }.keyboardShortcut("o") }
+                CommandGroup(replacing: .undoRedo) {
+                    Button("Undo") { if model.clipEditing { model.undoRegions() } else { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) } }.keyboardShortcut("z")
+                    Button("Redo") { if model.clipEditing { model.redoRegions() } else { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) } }.keyboardShortcut("z", modifiers: [.command, .shift])
+                }
             }
     }
 }
