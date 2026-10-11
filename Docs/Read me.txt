@@ -1,4 +1,4 @@
-CUELEVEL 1.4
+CUELEVEL 1.5
 Lossless loudness levelling for event playback
 
 Requires an Apple silicon Mac with macOS 13 or later.
@@ -10,6 +10,18 @@ THE FAST WAY: QUICK LEVEL
 Select any cue and click "Quick Level this cue" at the top of the right panel. CueLevel evens out clearly loud or quiet
 stretches (switch "Even out" off for music), levels the cue to the target with one gain change and switches to Levelled
 so you can hear it. Export saves it. "Quick Level all cues" does the whole list.
+
+WHERE FILES GO
+Everything is saved to Desktop › CueLevel unless you choose another folder:
+  Levelled/   <original name>_LVL-18.wav (or .mov). A second copy becomes "…_LVL-18 2.wav"; nothing is overwritten.
+  Reports/    CueLevel Report <date>.csv and .html after each Quick Level batch.
+
+EDITING A CUE (CLIP GAIN EDITOR)
+In/out: press I and O at the playhead, drag the IN/OUT flags on the ruler, or click "Trim silence". Audio files are cut;
+videos keep their length and the audio outside is silenced. Fades: type the fade-in/out lengths, pick a curve (Linear,
+Smooth, S-curve) and "Apply fades to all cues". M mutes the selected section. Return adds a marker; name it in the list.
+L loops, P plays the section or in–out range with pre/post-roll. The meter under the transport shows live loudness.
+Press ⌘/ for every shortcut.
 
 LEVEL ON DROP (HANDS-FREE)
 1. In the right-hand panel, switch on Quick Level and choose an output folder (for example on your show drive).
