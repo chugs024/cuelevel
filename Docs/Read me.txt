@@ -1,4 +1,4 @@
-CUELEVEL 1.5
+CUELEVEL 1.6
 Lossless loudness levelling for event playback
 
 Requires an Apple silicon Mac with macOS 13 or later.
@@ -22,6 +22,11 @@ videos keep their length and the audio outside is silenced. Fades: type the fade
 Smooth, S-curve) and "Apply fades to all cues". M mutes the selected section. Return adds a marker; name it in the list.
 L loops, P plays the section or in–out range with pre/post-roll. The meter under the transport shows live loudness.
 Press ⌘/ for every shortcut.
+More tools in the editor: "Lower gaps" turns down noise in the pauses between phrases (3, 6 or 10 dB). A selected section
+can have a low-cut (80–200 Hz) or de-ess, cross-faded in so it never clicks. Repair: remove DC offset, flip a channel's
+polarity (also offered as one-click buttons under Source checks). Snap keeps edits on quiet moments. Versions saves
+alternative edits of a cue. Transcript finds the words on this Mac (Apple's on-device speech recognition; nothing is
+uploaded — turn on Dictation in System Settings › Keyboard once so the language is installed).
 
 LEVEL ON DROP (HANDS-FREE)
 1. In the right-hand panel, switch on Quick Level and choose an output folder (for example on your show drive).
