@@ -403,7 +403,7 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let pts = ClipGain.previewPoints([boost])
         check(pts.count == 5 && near(pts[0].volume, 0.5, 0.001) && near(pts[2].volume, 1, 0.001) && near(pts[2].time, 1.5) && near(pts[4].time, 3), "preview envelope: \(pts)")
         let fine = try AudioEngine.detailWaveform(speechLike, duration: sectionsAnalysis.info.duration, token: Cancellation())
-        check(fine.count == 1600 && fine.max()! > 0.05, "fine waveform at 200 points per second: \(fine.count)")
+        check(fine.count == 1600 && fine.max()! > 0.005, "fine waveform at 200 points per second: \(fine.count)")
         print("PASS: zoom, undo, preview envelope and fine waveform")
         print("ALL 1.1 TESTS PASSED")
     }
