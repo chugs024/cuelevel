@@ -4,6 +4,19 @@ import Foundation
 // Rendered sample-accurately with FFmpeg after the clip gain sections. Video keeps its full length: instead of cutting,
 // the audio before the in point and after the out point is silenced, so picture and sound stay in sync.
 
+/// Polarity fix for a channel wired out of phase (1.6).
+enum PolarityFix: String, Codable, CaseIterable, Sendable {
+    case none = "Normal", left = "Flip left", right = "Flip right", both = "Flip both"
+    var filter: String? {
+        switch self {
+        case .none: return nil
+        case .left: return "aeval=exprs='-val(0)|val(1)':c=stereo"
+        case .right: return "aeval=exprs='val(0)|-val(1)':c=stereo"
+        case .both: return "aeval=exprs='-val(0)|-val(1)':c=stereo"
+        }
+    }
+}
+
 enum FadeShape: String, Codable, CaseIterable, Sendable {
     case linear = "Linear", smooth = "Smooth", sCurve = "S-curve"
     /// FFmpeg afade curve names.
@@ -25,13 +38,16 @@ struct CueEdit: Codable, Equatable, Sendable {
     var fadeOut = 0.0
     var fadeShape = FadeShape.smooth
     var markers: [CueMarker] = []
+    /// Repair fixes applied first (1.6): remove DC offset (5 Hz high-pass) and flip a channel's polarity.
+    var removeDC = false
+    var polarity = PolarityFix.none
 
     /// Shortest fade used at a cut so it never clicks.
     static let clickGuard = 0.005
 
     init() {}
     // Every field is optional when decoding, so sessions from older and newer versions always load.
-    enum CodingKeys: String, CodingKey { case inPoint, outPoint, fadeIn, fadeOut, fadeShape, markers }
+    enum CodingKeys: String, CodingKey { case inPoint, outPoint, fadeIn, fadeOut, fadeShape, markers, removeDC, polarity }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         inPoint = try c.decodeIfPresent(Double.self, forKey: .inPoint) ?? 0
@@ -40,12 +56,16 @@ struct CueEdit: Codable, Equatable, Sendable {
         fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
         fadeShape = (try? c.decodeIfPresent(FadeShape.self, forKey: .fadeShape)) ?? .smooth
         markers = try c.decodeIfPresent([CueMarker].self, forKey: .markers) ?? []
+        removeDC = try c.decodeIfPresent(Bool.self, forKey: .removeDC) ?? false
+        polarity = (try? c.decodeIfPresent(PolarityFix.self, forKey: .polarity)) ?? PolarityFix.none
     }
+    var repairFilters: [String] { (removeDC ? ["highpass=f=5:p=1"] : []) + (polarity.filter.map { [$0] } ?? []) }
+    var hasRepairs: Bool { removeDC || polarity != .none }
 
     func end(duration: Double) -> Double { min(duration, max(inPoint + 0.1, outPoint ?? duration)) }
     func isTrimmed(duration: Double) -> Bool { inPoint > 0.0005 || end(duration: duration) < duration - 0.0005 }
     var hasFades: Bool { fadeIn > 0.0005 || fadeOut > 0.0005 }
-    func changesAudio(duration: Double) -> Bool { isTrimmed(duration: duration) || hasFades }
+    func changesAudio(duration: Double) -> Bool { isTrimmed(duration: duration) || hasFades || hasRepairs }
 
     /// Keeps points inside the cue and fades inside the kept part.
     func normalized(duration: Double) -> CueEdit {
@@ -64,7 +84,7 @@ struct CueEdit: Codable, Equatable, Sendable {
     /// outputs, where the head and tail are silenced instead of removed.
     func filters(duration: Double, sampleRate: Int, canCut: Bool) -> [String] {
         let e = normalized(duration: duration)
-        guard e.changesAudio(duration: duration) else { return [] }
+        guard e.isTrimmed(duration: duration) || e.hasFades else { return [] }
         let rate = Double(sampleRate)
         func samples(_ t: Double) -> Int { Int((t * rate).rounded()) }
         let start = e.inPoint, end = e.end(duration: duration)
@@ -102,7 +122,9 @@ extension ProcessingSettings {
     /// Everything edited by hand on this cue, applied before any processing: clip gain, then in/out points and edge fades.
     func editFilters(duration: Double, sampleRate: Int, canCut: Bool) -> String? {
         var list: [String] = []
+        if let edit { list += edit.repairFilters }
         if let clip = ClipGain.filter(clipGain) { list.append(clip) }
+        if let effects = ClipGain.effectsFilter(clipGain) { list.append(effects) }
         if let edit { list += edit.filters(duration: duration, sampleRate: sampleRate, canCut: canCut) }
         return list.isEmpty ? nil : list.joined(separator: ",")
     }
@@ -117,7 +139,7 @@ struct CueEditState: Equatable, Sendable {
 extension ClipGain {
     /// Gain of the in/out points and edge fades at time t (0 outside the kept part, ramps across the fades).
     static func edgeGain(at t: Double, edit: CueEdit?, duration: Double) -> Double {
-        guard let edit, edit.changesAudio(duration: duration) else { return 1 }
+        guard let edit, edit.isTrimmed(duration: duration) || edit.hasFades else { return 1 }
         let e = edit.normalized(duration: duration), start = e.inPoint, end = e.end(duration: duration)
         guard t >= start, t <= end else { return 0 }
         var g = 1.0
@@ -129,5 +151,37 @@ extension ClipGain {
     /// Whole edit envelope (clip gain × edges) at time t.
     static func envelope(at t: Double, regions: [GainRegion]?, edit: CueEdit?, duration: Double) -> Double {
         multiplier(at: t, regions: active(regions)) * edgeGain(at: t, edit: edit, duration: duration)
+    }
+}
+
+
+/// A saved alternative edit of a cue (1.6), like a Pro Tools playlist.
+struct CueVersion: Codable, Equatable, Identifiable, Sendable {
+    var id = UUID()
+    var name: String
+    var date = Date()
+    var regions: [GainRegion]
+    var edit: CueEdit
+}
+
+/// One recognised word with its time in the cue (1.6).
+struct TranscriptWord: Codable, Equatable, Hashable, Sendable {
+    var text: String
+    var start: Double
+    var duration: Double
+}
+extension Array where Element == TranscriptWord {
+    /// Words grouped into lines at pauses longer than `pause` seconds.
+    func lines(pause: Double = 0.9) -> [(start: Double, text: String)] {
+        var result: [(Double, String)] = []
+        var current: [TranscriptWord] = []
+        for w in self.sorted(by: { $0.start < $1.start }) {
+            if let last = current.last, w.start - (last.start + last.duration) > pause {
+                result.append((current[0].start, current.map(\.text).joined(separator: " "))); current = []
+            }
+            current.append(w)
+        }
+        if !current.isEmpty { result.append((current[0].start, current.map(\.text).joined(separator: " "))) }
+        return result
     }
 }

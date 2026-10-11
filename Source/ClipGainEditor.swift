@@ -42,37 +42,82 @@ struct ClipGainEditor: View {
                           regions: regions, position: model.playhead) { center in
                 model.timeView = TimeView(start: center - view.length / 2, length: model.timeView.length).panned(by: 0, duration: analysis.info.duration)
             }
+            if let words = job.transcript, !words.isEmpty {
+                TranscriptStrip(words: words, viewStart: view.start, viewLength: view.length, position: model.playhead, seek: model.seek)
+            }
             sectionBar(region: region, regions: regions)
+            if let words = job.transcript, !words.isEmpty {
+                DisclosureGroup("Transcript (\(words.count) words)") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(words.lines().enumerated()), id: \.offset) { _, line in
+                            Button { model.seek(line.start) } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(preciseClock(line.start)).monospacedDigit().foregroundStyle(Theme.muted).frame(width: 64, alignment: .leading)
+                                    Text(line.text).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading).multilineTextAlignment(.leading)
+                                }.contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    }.font(.system(size: 12)).padding(.top, 4).textSelection(.enabled)
+                }.font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.text)
+            }
         }
         .background(shortcuts)
     }
 
     // MARK: Toolbar
     func toolbar(view: (start: Double, length: Double), region: GainRegion?) -> some View {
-        HStack(spacing: 6) {
-            Button { model.undoRegions() } label: { Image(systemName: "arrow.uturn.backward") }.buttonStyle(CLButton(kind: .ghost)).disabled(!model.history.canUndo).help("Undo (⌘Z)")
-            Button { model.redoRegions() } label: { Image(systemName: "arrow.uturn.forward") }.buttonStyle(CLButton(kind: .ghost)).disabled(!model.history.canRedo).help("Redo (⇧⌘Z)")
-            Divider().frame(height: 14)
-            Button { model.zoom(by: 0.5) } label: { Image(systemName: "minus.magnifyingglass") }.buttonStyle(CLButton(kind: .ghost)).help("Zoom out (R)")
-            Button { model.zoom(by: 2) } label: { Image(systemName: "plus.magnifyingglass") }.buttonStyle(CLButton(kind: .ghost)).help("Zoom in (T)")
-            Button("Fit") { model.zoomToFit() }.buttonStyle(CLButton(kind: .ghost)).help("Show the whole cue")
-            Button("Section") { model.zoomToSelectedRegion() }.buttonStyle(CLButton(kind: .ghost)).disabled(region == nil).help("Zoom to the selected section")
-            Divider().frame(height: 14)
-            Button { model.evenOutSelected() } label: { Label("Even out", systemImage: "wand.and.rays") }.buttonStyle(CLButton(kind: .ghost)).disabled(model.measuringSection)
-                .help("Find stretches more than 2 dB louder or quieter than the rest and turn them back. Hand-drawn sections are kept.")
-            Divider().frame(height: 14)
-            Button { model.toggleMuteSelected() } label: { Label("Mute", systemImage: region?.muted == true ? "speaker.slash.fill" : "speaker.slash") }
-                .buttonStyle(CLButton(kind: .ghost)).disabled(region == nil).help("Silence the selected section, with short fades (M)")
-            Button { model.addMarker() } label: { Label("Marker", systemImage: "flag") }.buttonStyle(CLButton(kind: .ghost)).help("Add a marker at the playhead (Return)")
-            Spacer()
-            Button { model.looping.toggle() } label: { Image(systemName: "repeat") }.buttonStyle(CLButton(kind: model.looping ? .primary : .ghost)).help("Loop the section or in–out range (L)")
-            Menu {
-                ForEach([0.0, 0.5, 1.0, 2.0, 3.0], id: \.self) { v in Button(v == 0 ? "No pre/post-roll" : String(format: "%g s pre/post-roll", v)) { model.preRoll = v } }
-            } label: { Text(model.preRoll == 0 ? "No roll" : String(format: "%g s roll", model.preRoll)) }.menuStyle(.borderlessButton).fixedSize().help("Time played before and after a section")
-            Button { model.playRange() } label: { Image(systemName: "play.square") }.buttonStyle(CLButton(kind: .ghost)).help("Play the section (or in–out range) with pre/post-roll")
-            Button { model.showShortcuts = true } label: { Image(systemName: "questionmark.circle") }.buttonStyle(CLButton(kind: .ghost)).help("Keyboard shortcuts")
-            Text("\(preciseClock(view.start)) – \(preciseClock(view.start + view.length))").monospacedDigit().foregroundStyle(Theme.muted)
-            if model.detailWaveform.isEmpty { ProgressView().controlSize(.small).help("Loading the detailed waveform for zooming") }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Button { model.undoRegions() } label: { Image(systemName: "arrow.uturn.backward") }.buttonStyle(CLButton(kind: .ghost)).disabled(!model.history.canUndo).help("Undo (⌘Z)")
+                Button { model.redoRegions() } label: { Image(systemName: "arrow.uturn.forward") }.buttonStyle(CLButton(kind: .ghost)).disabled(!model.history.canRedo).help("Redo (⇧⌘Z)")
+                Divider().frame(height: 14)
+                Button { model.toggleMuteSelected() } label: { Label("Mute", systemImage: region?.muted == true ? "speaker.slash.fill" : "speaker.slash") }
+                    .buttonStyle(CLButton(kind: .ghost)).disabled(region == nil).help("Silence the selected section, with short fades (M)")
+                Button { model.addMarker() } label: { Label("Marker", systemImage: "flag") }.buttonStyle(CLButton(kind: .ghost)).help("Add a marker at the playhead (Return)")
+                Divider().frame(height: 14)
+                Button { model.evenOutSelected() } label: { Label("Even out", systemImage: "wand.and.rays") }.buttonStyle(CLButton(kind: .ghost)).disabled(model.measuringSection)
+                    .help("Find stretches more than 2 dB louder or quieter than the rest and turn them back. Hand-drawn sections are kept.")
+                Menu {
+                    ForEach([3.0, 6.0, 10.0], id: \.self) { d in Button("Lower pauses by \(Int(d)) dB") { model.lowerGaps(by: d) } }
+                    Divider()
+                    Button("Remove gap sections") { model.lowerGaps(by: 0) }
+                } label: { Label("Lower gaps", systemImage: "waveform.badge.minus") }.menuStyle(.borderlessButton).fixedSize()
+                    .help("Turn down hiss and room noise in the pauses between phrases")
+                Menu {
+                    Button("Save current edit as a version") { model.saveVersion() }
+                    if !model.versions.isEmpty {
+                        Divider()
+                        ForEach(model.versions) { v in
+                            Menu(v.name) {
+                                Button("Load") { model.loadVersion(v) }
+                                Button("Delete") { model.deleteVersion(v) }
+                            }
+                        }
+                    }
+                } label: { Label(model.versions.isEmpty ? "Versions" : "Versions (\(model.versions.count))", systemImage: "square.stack") }.menuStyle(.borderlessButton).fixedSize()
+                    .help("Keep alternative edits of this cue and switch between them")
+                Button { model.transcribeSelected() } label: {
+                    Label(model.transcribing ? "Transcribing…" : (job.transcript == nil ? "Transcript" : "Transcribe again"), systemImage: "text.bubble")
+                }.buttonStyle(CLButton(kind: .ghost)).disabled(model.transcribing).help("Find the words in this cue, on this Mac (nothing is uploaded)")
+                Spacer()
+            }
+            HStack(spacing: 6) {
+                Button { model.zoom(by: 0.5) } label: { Image(systemName: "minus.magnifyingglass") }.buttonStyle(CLButton(kind: .ghost)).help("Zoom out (R)")
+                Button { model.zoom(by: 2) } label: { Image(systemName: "plus.magnifyingglass") }.buttonStyle(CLButton(kind: .ghost)).help("Zoom in (T)")
+                Button("Fit") { model.zoomToFit() }.buttonStyle(CLButton(kind: .ghost)).help("Show the whole cue")
+                Button("Section") { model.zoomToSelectedRegion() }.buttonStyle(CLButton(kind: .ghost)).disabled(region == nil).help("Zoom to the selected section")
+                Button { model.snapToQuiet.toggle() } label: { Label("Snap", systemImage: "scope") }.buttonStyle(CLButton(kind: model.snapToQuiet ? .primary : .ghost))
+                    .help("Section edges and in/out points land on the quietest moment within 60 ms, so edits never cut through a word")
+                Spacer()
+                Button { model.looping.toggle() } label: { Image(systemName: "repeat") }.buttonStyle(CLButton(kind: model.looping ? .primary : .ghost)).help("Loop the section or in–out range (L)")
+                Menu {
+                    ForEach([0.0, 0.5, 1.0, 2.0, 3.0], id: \.self) { v in Button(v == 0 ? "No pre/post-roll" : String(format: "%g s pre/post-roll", v)) { model.preRoll = v } }
+                } label: { Text(model.preRoll == 0 ? "No roll" : String(format: "%g s roll", model.preRoll)) }.menuStyle(.borderlessButton).fixedSize().help("Time played before and after a section")
+                Button { model.playRange() } label: { Image(systemName: "play.square") }.buttonStyle(CLButton(kind: .ghost)).help("Play the section (or in–out range) with pre/post-roll (P)")
+                Button { model.showShortcuts = true } label: { Image(systemName: "questionmark.circle") }.buttonStyle(CLButton(kind: .ghost)).help("Keyboard shortcuts (⌘/)")
+                Text("\(preciseClock(view.start)) – \(preciseClock(view.start + view.length))").monospacedDigit().foregroundStyle(Theme.muted)
+                if model.detailWaveform.isEmpty { ProgressView().controlSize(.small).help("Loading the detailed waveform for zooming") }
+            }
         }.font(.system(size: 11.5))
     }
 
@@ -87,6 +132,13 @@ struct ClipGainEditor: View {
                     numberField("Gain", value: region.gain, unit: "dB", width: 46) { var r = region; r.gain = $0; model.updateRegion(r) }
                     numberField("Fade in", value: region.fadeIn * 1000, unit: "ms in", width: 46, decimals: 0) { var r = region; r.fadeIn = $0 / 1000; model.updateRegion(r) }
                     numberField("Fade out", value: region.fadeOut * 1000, unit: "ms out", width: 46, decimals: 0) { var r = region; r.fadeOut = $0 / 1000; model.updateRegion(r) }
+                    Menu {
+                        Button("No low-cut") { var r = region; r.lowCut = nil; model.updateRegion(r) }
+                        ForEach([80.0, 100.0, 150.0, 200.0], id: \.self) { f in Button("Low-cut \(Int(f)) Hz") { var r = region; r.lowCut = f; model.updateRegion(r) } }
+                    } label: { Text(region.lowCut.map { "Low-cut \(Int($0)) Hz" } ?? "Low-cut off") }.menuStyle(.borderlessButton).fixedSize()
+                        .help("Remove rumble or handling noise in this section only")
+                    Toggle("De-ess", isOn: Binding(get: { region.deEss == true }, set: { var r = region; r.deEss = $0 ? true : nil; model.updateRegion(r) })).toggleStyle(.checkbox)
+                        .help("Soften harsh S sounds in this section only")
                     Spacer()
                     Button { model.deleteSelectedRegion() } label: { Image(systemName: "trash") }.buttonStyle(CLButton(kind: .ghost)).help("Remove this section")
                 }
@@ -147,6 +199,14 @@ struct ClipGainEditor: View {
                 ForEach(FadeShape.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }.labelsHidden().frame(width: 96).help("Fade curve")
             Button("Apply fades to all cues") { model.applyFadesToAllCues() }.buttonStyle(CLButton(kind: .ghost))
+            Spacer()
+        }
+        HStack(spacing: 8) {
+            Text("Repair").font(.system(size: 12, weight: .semibold))
+            Toggle("Remove DC offset", isOn: Binding(get: { edit.removeDC }, set: { var e = edit; e.removeDC = $0; model.setEdit(e) })).toggleStyle(.checkbox)
+            Picker("Polarity", selection: Binding(get: { edit.polarity }, set: { var e = edit; e.polarity = $0; model.setEdit(e) })) {
+                ForEach(PolarityFix.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.frame(width: 170).help("Flip a channel that was wired out of phase")
             Spacer()
         }
         if !edit.markers.isEmpty {
@@ -419,8 +479,9 @@ struct ClipGainLane: View {
                 context.stroke(guide, with: .color(Theme.amber.opacity(0.25)), style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
             }
             let centre = max(a + 30, min(b - 30, (max(fi, 0) + min(fo, w)) / 2))
-            let value = r.muted == true ? "MUTED" : (r.isReference ? "★ " : (r.isAuto == true ? "auto " : "")) + signed(r.gain) + " dB"
-            let pill = CGRect(x: centre - (r.isAuto == true ? 42 : 32), y: y - 9, width: r.isAuto == true ? 84 : 64, height: 18)
+            let value = r.muted == true ? "MUTED" : (r.isReference ? "★ " : (r.isGap == true ? "gap " : (r.isAuto == true ? "auto " : ""))) + signed(r.gain) + " dB" + (r.hasEffects ? " ✦" : "")
+            let wide = r.isAuto == true || r.hasEffects
+            let pill = CGRect(x: centre - (wide ? 44 : 32), y: y - 9, width: wide ? 88 : 64, height: 18)
             context.fill(Path(roundedRect: pill, cornerRadius: 5), with: .color(isSelected ? Theme.bone : Theme.raised))
             context.stroke(Path(roundedRect: pill, cornerRadius: 5), with: .color(r.isReference ? Theme.lime : Theme.bone.opacity(0.5)), lineWidth: 1)
             context.draw(Text(value).font(.system(size: 10.5, weight: .bold)).monospacedDigit().foregroundColor(isSelected ? Theme.base : Theme.bone), at: CGPoint(x: centre, y: y))
@@ -624,5 +685,36 @@ struct ScrollZoomCatcher: NSViewRepresentable {
             }
         }
         deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+}
+
+
+/// Words under the waveform at their times; click one to jump there.
+struct TranscriptStrip: View {
+    let words: [TranscriptWord]
+    let viewStart: Double
+    let viewLength: Double
+    let position: Double
+    let seek: (Double) -> Void
+    var body: some View {
+        GeometryReader { geometry in
+            let w = geometry.size.width, l = max(1e-6, viewLength)
+            let visible = words.filter { $0.start + $0.duration >= viewStart && $0.start <= viewStart + l }
+            // Thin out when zoomed far out so words don't pile up.
+            let minGap = 52.0 * l / Double(max(1, w))
+            let shown = visible.reduce(into: [TranscriptWord]()) { acc, word in if let last = acc.last, word.start - last.start < minGap { return }; acc.append(word) }
+            ZStack(alignment: .topLeading) {
+                ForEach(shown, id: \.self) { word in
+                    let x = CGFloat((word.start - viewStart) / l) * w
+                    let current = position >= word.start && position <= word.start + word.duration
+                    Text(word.text).font(.system(size: 11, weight: current ? .bold : .regular)).foregroundStyle(current ? Theme.teal : Theme.text)
+                        .lineLimit(1).fixedSize().offset(x: x, y: 3)
+                        .onTapGesture { seek(word.start) }
+                }
+            }.frame(width: w, height: 22, alignment: .topLeading).clipped()
+        }
+        .frame(height: 22)
+        .background(RoundedRectangle(cornerRadius: 5).fill(Theme.field))
+        .help("Transcript made on this Mac. Click a word to jump to it.")
     }
 }

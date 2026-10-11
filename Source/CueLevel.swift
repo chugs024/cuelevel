@@ -582,6 +582,19 @@ struct ContentView: View {
             Text("Source checks").sectionTitle().padding(.bottom, 2)
             if findings.isEmpty { note(analysis.stereo == nil ? "Measure again to check clipping, phase and silence." : "No clipping, DC offset, phase or silence problems.", good: analysis.stereo != nil) }
             ForEach(findings, id: \.self) { note($0, good: false) }
+            // One-click repairs for what the checks found (applied when the cue is levelled).
+            let edit = model.selectedEdit
+            HStack(spacing: 8) {
+                if let dc = analysis.levels.dcOffset, abs(dc) >= 0.001 {
+                    Button(edit.removeDC ? "DC offset fix on ✓" : "Remove DC offset") { model.fixDCOffset() }.buttonStyle(CLButton(kind: .ghost)).disabled(edit.removeDC)
+                }
+                if analysis.info.channels >= 2, let c = analysis.stereo?.correlation, c < -0.1 {
+                    Button(edit.polarity == .right ? "Right channel flipped ✓" : "Flip right channel") { model.fixPolarity(edit.polarity == .right ? .none : .right) }.buttonStyle(CLButton(kind: .ghost))
+                }
+                if let s = analysis.stereo, s.headSilence >= 2 || s.tailSilence >= 2 {
+                    Button("Trim silence") { model.trimToSound() }.buttonStyle(CLButton(kind: .ghost))
+                }
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     @ViewBuilder func referenceColumn(_ job: CueJob) -> some View {

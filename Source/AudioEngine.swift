@@ -504,6 +504,10 @@ enum AudioEngine {
         let curve = try momentaryLoudness(input, duration: info.duration, token: token)
         return ClipGain.evenOut(momentary: curve.map(Double.init), duration: info.duration, tolerance: tolerance, avoiding: existing)
     }
+    static func gapRegions(_ input: URL, info: MediaInfo, depth: Double, token: Cancellation) throws -> [GainRegion] {
+        let curve = try momentaryLoudness(input, duration: info.duration, token: token)
+        return ClipGain.gapRegions(momentary: curve.map(Double.init), duration: info.duration, depth: depth)
+    }
     static func analyze(_ input: URL, token: Cancellation, progress: @escaping @Sendable (Double, String) -> Void) throws -> Analysis {
         progress(0, "Inspecting file")
         let info = try inspect(input, token: token)

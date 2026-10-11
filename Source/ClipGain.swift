@@ -21,6 +21,12 @@ struct GainRegion: Codable, Equatable, Hashable, Identifiable, Sendable {
     var isAuto: Bool? = nil
     /// Silenced section (1.5): a mute with short fades, like muting a clip in Pro Tools.
     var muted: Bool? = nil
+    /// Section effects (1.6): a low-cut at this frequency (Hz) and/or a de-esser, cross-faded in with the section's fades.
+    var lowCut: Double? = nil
+    var deEss: Bool? = nil
+    /// Made by "Lower gaps" (1.6): turns down the quiet between phrases.
+    var isGap: Bool? = nil
+    var hasEffects: Bool { (lowCut ?? 0) > 0 || deEss == true }
 
     static let gainRange = -24.0 ... 24.0
     static let minimumLength = 0.1
@@ -183,6 +189,68 @@ extension ClipGain {
             if !avoiding.contains(where: { $0.start < region.end && region.start < $0.end }) { result.append(region) }
         }
         return result
+    }
+}
+
+extension ClipGain {
+    /// Weight expression (0–1) of the sections matching `include`, from the sample index, with their fades.
+    static func weightExpression(_ regions: [GainRegion]) -> String {
+        func n(_ v: Double) -> String { String(format: "%.6f", v) }
+        let terms = regions.map { r in "clip((T-\(n(r.start)))/\(n(r.fadeIn)),0,1)*clip((\(n(r.end))-T)/\(n(r.fadeOut)),0,1)" }
+        return "min(1," + terms.joined(separator: "+") + ")"
+    }
+    /// Section effects as a cross-fade between the dry signal and a filtered copy, so they switch in and out without clicks.
+    static func effectsFilter(_ regions: [GainRegion]?) -> String? {
+        let list = (regions ?? []).filter { $0.length > 0 }
+        var stages: [String] = []
+        func stage(_ tag: String, _ effect: String, _ group: [GainRegion]) -> String {
+            let w = weightExpression(group).replacingOccurrences(of: "T", with: "(n/s)")
+            return "asplit=2[\(tag)d][\(tag)w];[\(tag)w]\(effect)[\(tag)x];[\(tag)d][\(tag)x]amerge=inputs=2,aeval=exprs='val(0)*(1-\(w))+val(2)*\(w)|val(1)*(1-\(w))+val(3)*\(w)':c=stereo"
+        }
+        let lowCut = list.filter { ($0.lowCut ?? 0) > 0 }
+        if let f = lowCut.compactMap(\.lowCut).max() { stages.append(stage("lc", "highpass=f=\(Int(f)):p=2", lowCut)) }
+        let deEss = list.filter { $0.deEss == true }
+        if !deEss.isEmpty { stages.append(stage("ds", "deesser=i=0.4:m=0.5:f=0.5", deEss)) }
+        return stages.isEmpty ? nil : stages.joined(separator: ",")
+    }
+
+    /// "Lower gaps": sections over the pauses between phrases (quieter than 12 dB below the typical level for at least
+    /// `minimumGap` seconds), turned down by `depth` dB with fades that stay inside the pause.
+    static func gapRegions(momentary m: [Double], duration: Double, depth: Double = 6, minimumGap: Double = 0.4) -> [GainRegion] {
+        let step = 0.1
+        guard m.count > 10 else { return [] }
+        func median(_ v: [Double]) -> Double? { let s = v.sorted(); return s.isEmpty ? nil : s[s.count / 2] }
+        guard let rough = median(m.filter { $0 > -50 }), let reference = median(m.filter { $0 > -50 && $0 > rough - 15 }) else { return [] }
+        let quiet = m.map { $0 < reference - 12 }
+        var result: [GainRegion] = []
+        var i = 0
+        while i < m.count {
+            guard quiet[i] else { i += 1; continue }
+            var j = i
+            while j + 1 < m.count, quiet[j + 1] { j += 1 }
+            // A reading covers the 400 ms before its stamp, so the pause spans (i·0.1 − 0.3) … ((j+1)·0.1).
+            let start = max(0, Double(i) * step - 0.3), end = min(duration, Double(j + 1) * step)
+            if end - start >= minimumGap {
+                let fade = min(0.08, (end - start) / 4)
+                var r = GainRegion(start: start, end: end, gain: -abs(depth), fadeIn: fade, fadeOut: fade)
+                r.isAuto = true; r.isGap = true
+                result.append(r.normalized(duration: duration))
+            }
+            i = j + 1
+        }
+        return result
+    }
+
+    /// Nearest quiet moment (lowest peak) to `t` within ±`window` seconds, from a fine waveform covering `duration`.
+    static func snapToQuiet(_ t: Double, peaks: [Float], duration: Double, window: Double = 0.06) -> Double {
+        guard !peaks.isEmpty, duration > 0 else { return t }
+        let perSecond = Double(peaks.count) / duration
+        let centre = Int(t * perSecond), span = max(1, Int(window * perSecond))
+        let lo = max(0, centre - span), hi = min(peaks.count - 1, centre + span)
+        guard lo <= hi else { return t }
+        var best = lo
+        for k in lo...hi where peaks[k] < peaks[best] || (peaks[k] == peaks[best] && abs(k - centre) < abs(best - centre)) { best = k }
+        return (Double(best) + 0.5) / perSecond
     }
 }
 

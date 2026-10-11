@@ -463,6 +463,55 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let legacyEdit = try JSONDecoder().decode(CueEdit.self, from: Data(#"{"inPoint":1}"#.utf8))
         check(legacyEdit.inPoint == 1 && legacyEdit.fadeShape == .smooth && legacyEdit.markers.isEmpty, "edit decodes with missing fields")
         print("PASS: trim, fades, mute, naming, report and decoding")
+
+        // 29. 1.6: section effects, lower gaps, snap, repairs, versions, transcript lines.
+        var lc = GainRegion(start: 2, end: 6, gain: 0, fadeIn: 0.05, fadeOut: 0.05); lc.lowCut = 150
+        let fx = ClipGain.effectsFilter([lc])!
+        check(fx.hasPrefix("asplit=2[lcd][lcw];[lcw]highpass=f=150:p=2[lcx];[lcd][lcx]amerge=inputs=2,aeval=") && !fx.contains("T-"), "effects graph: \(fx.prefix(90))")
+        check(ClipGain.active([lc]).isEmpty && ClipGain.effectsFilter([GainRegion(start: 0, end: 1, gain: -3)]) == nil, "effects-only section changes no gain")
+        let hum = try make("hum.wav", ["-f","lavfi","-i","sine=frequency=50:sample_rate=48000:duration=8","-ac","2","-c:a","pcm_s24le"])
+        let humAnalysis = try AudioEngine.analyze(hum, token: Cancellation()) { _, _ in }
+        var fxSettings = lossless; fxSettings.clipGain = [lc]
+        let fxRender = try AudioEngine.process(hum, analysis: humAnalysis, settings: fxSettings, directory: area.appendingPathComponent("render-fx"), token: Cancellation()) { _, _ in }
+        let fxInfo = try AudioEngine.inspect(fxRender.url, token: Cancellation())
+        let outside = try AudioEngine.sectionLoudness(fxRender.url, info: fxInfo, start: 0.3, end: 1.7, regions: [], token: Cancellation())
+        let inside = (try? AudioEngine.sectionLoudness(fxRender.url, info: fxInfo, start: 2.5, end: 5.5, regions: [], token: Cancellation())) ?? -120
+        check(outside - inside > 15 && Swift.abs(fxInfo.duration - 8) < 0.01, "low-cut only inside the section: \(outside) vs \(inside)")
+        var wavFx = ProcessingSettings(); wavFx.format = .wav; wavFx.target = -18; wavFx.peak = -1; wavFx.clipGain = [lc]
+        _ = try AudioEngine.process(hum, analysis: humAnalysis, settings: wavFx, directory: area.appendingPathComponent("render-fx-wav"), token: Cancellation()) { _, _ in }
+        // Lower gaps: phrases with pauses.
+        var phrases = [Double](repeating: -20, count: 120); for i in 40..<52 { phrases[i] = -45 }
+        let gaps = ClipGain.gapRegions(momentary: phrases, duration: 12, depth: 6)
+        check(gaps.count == 1 && gaps[0].isGap == true && gaps[0].gain == -6 && Swift.abs(gaps[0].start - 3.7) < 0.05 && Swift.abs(gaps[0].end - 5.2) < 0.05, "one pause long enough: \(gaps)")
+        // Snap: nearest quiet point.
+        var snapPeaks = [Float](repeating: 0.5, count: 2000); snapPeaks[1010] = 0.01   // 200 points per second over 10 s
+        check(Swift.abs(ClipGain.snapToQuiet(5.0, peaks: snapPeaks, duration: 10) - 5.0525) < 0.001, "snaps to the quiet bin")
+        check(ClipGain.snapToQuiet(5.0, peaks: [], duration: 10) == 5.0, "no waveform, no snap")
+        // Repairs: polarity flip and DC removal.
+        var flip = CueEdit(); flip.polarity = .right
+        var flipSettings = lossless; flipSettings.edit = flip
+        let phaseFile = try make("phase2.wav", ["-f","lavfi","-i","aevalsrc=0.2*sin(2*PI*440*t)|-0.2*sin(2*PI*440*t):s=48000:d=4","-c:a","pcm_s24le"])
+        let phaseAnalysis = try AudioEngine.analyze(phaseFile, token: Cancellation()) { _, _ in }
+        check((phaseAnalysis.stereo?.correlation ?? 0) < -0.9, "fixture out of phase")
+        let flipped = try AudioEngine.process(phaseFile, analysis: phaseAnalysis, settings: flipSettings, directory: area.appendingPathComponent("render-flip"), token: Cancellation()) { _, _ in }
+        let flippedAnalysis = try AudioEngine.analyze(flipped.url, token: Cancellation()) { _, _ in }
+        check((flippedAnalysis.stereo?.correlation ?? 0) > 0.9, "polarity fixed: \(flippedAnalysis.stereo?.correlation ?? 0)")
+        var dcFix = CueEdit(); dcFix.removeDC = true
+        var dcSettings = lossless; dcSettings.edit = dcFix
+        let dcFile = fixtures.appendingPathComponent("dc.wav")
+        let dcAnalysis = try AudioEngine.analyze(dcFile, token: Cancellation()) { _, _ in }
+        let dcOut = try AudioEngine.process(dcFile, analysis: dcAnalysis, settings: dcSettings, directory: area.appendingPathComponent("render-dc"), token: Cancellation()) { _, _ in }
+        let dcAfter = try AudioEngine.analyze(dcOut.url, token: Cancellation()) { _, _ in }
+        check(Swift.abs(dcAfter.levels.dcOffset ?? 1) < 0.001 && Swift.abs(dcAnalysis.levels.dcOffset ?? 0) >= 0.001, "DC removed: \(dcAnalysis.levels.dcOffset ?? 0) → \(dcAfter.levels.dcOffset ?? 0)")
+        check(!dcAfter.sourceFindings.contains { $0.contains("DC offset") }, "no DC finding after repair")
+        // Versions, transcript lines, decoding of new fields.
+        let version = CueVersion(name: "Safe", regions: [lc], edit: flip)
+        check(try JSONDecoder().decode(CueVersion.self, from: JSONEncoder().encode(version)) == version, "version round-trips")
+        let words = [TranscriptWord(text: "Hello", start: 0.5, duration: 0.3), TranscriptWord(text: "everyone.", start: 0.9, duration: 0.4), TranscriptWord(text: "Welcome", start: 3.0, duration: 0.4)]
+        let lines = words.lines()
+        check(lines.count == 2 && lines[0].text == "Hello everyone." && lines[1].start == 3.0, "transcript lines: \(lines)")
+        check(try JSONDecoder().decode(CueEdit.self, from: Data(#"{"removeDC":true,"polarity":"Flip left"}"#.utf8)).polarity == .left, "repair fields decode")
+        print("PASS: section effects, lower gaps, snap, repairs, versions, transcript lines")
         print("ALL 1.1 TESTS PASSED")
     }
 }

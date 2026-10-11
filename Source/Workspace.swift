@@ -24,6 +24,9 @@ struct CueJob: Identifiable, Codable {
     var clipGain: [GainRegion]? = nil
     /// In/out points, edge fades and markers (1.5).
     var edit: CueEdit? = nil
+    /// Saved alternative edits (1.6) and the on-device transcript.
+    var versions: [CueVersion]? = nil
+    var transcript: [TranscriptWord]? = nil
 }
 struct SavedPreset: Codable, Identifiable { var id = UUID(); var name: String; var settings: ProcessingSettings }
 struct Session: Codable {
@@ -243,10 +246,11 @@ struct ExportReport: Codable {
                     var evened = 0
                     if render && quick && evenOut {
                         update(id) { $0.message = "Evening out loud and quiet stretches" }
-                        let manual = (jobs.first(where: { $0.id == id })?.clipGain ?? []).filter { $0.isAuto != true }
+                        let all = jobs.first(where: { $0.id == id })?.clipGain ?? []
+                        let manual = all.filter { $0.isAuto != true }, keep = all.filter { $0.isAuto != true || $0.isGap == true }
                         let source = current.source, info = analysis.info
                         let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, keeping: manual, token: cancellation) }.value
-                        update(id) { $0.clipGain = manual + auto }
+                        update(id) { $0.clipGain = keep + auto }
                         evened = auto.count
                     }
                     var cueOptions = Self.settingsForCue(options, analysis: analysis, library: references, recommend: autoRecommend && !quick)
@@ -411,12 +415,12 @@ struct ExportReport: Codable {
     func evenOutSelected() {
         guard !measuringSection, let job = selected, let info = job.analysis?.info else { return }
         measuringSection = true; status = "Finding loud and quiet stretches"
-        let manual = selectedRegions.filter { $0.isAuto != true }, source = job.source
+        let manual = selectedRegions.filter { $0.isAuto != true }, keep = selectedRegions.filter { $0.isAuto != true || $0.isGap == true }, source = job.source
         Task {
             defer { measuringSection = false }
             do {
                 let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, keeping: manual, token: Cancellation()) }.value
-                setRegions(manual + auto)
+                setRegions(keep + auto)
                 status = auto.isEmpty ? "Already even: nothing is more than \(Int(ClipGain.evenOutTolerance)) dB from the typical level" : "Even out made \(auto.count) section\(auto.count == 1 ? "" : "s"). Adjust any of them, then click Done editing."
             } catch { self.error = error.localizedDescription }
         }
@@ -428,6 +432,9 @@ struct ExportReport: Codable {
     // MARK: In/out points, fades, markers, mute, loop (1.5)
     func setEdit(_ edit: CueEdit, recordUndo: Bool = true) {
         guard let id = selection, let duration = selected?.analysis?.info.duration, duration > 0 else { return }
+        var edit = edit
+        if recordUndo, edit.inPoint != selectedEdit.inPoint, edit.inPoint > 0 { edit.inPoint = snapped(edit.inPoint) }
+        if recordUndo, edit.outPoint != selectedEdit.outPoint, let out = edit.outPoint { edit.outPoint = snapped(out) }
         let next = edit.normalized(duration: duration)
         guard next != selectedEdit else { return }
         if recordUndo { history.record(CueEditState(regions: selectedRegions, edit: selectedEdit)) }
@@ -488,6 +495,64 @@ struct ExportReport: Codable {
         }
         player.play(); playing = true
     }
+
+    // MARK: 1.6 — snap, lower gaps, versions, transcript, repairs
+    /// Section edges and in/out points land on the quietest moment within ±60 ms, so edits never cut through a word.
+    @Published var snapToQuiet = true
+    @Published var transcribing = false
+    func snapped(_ t: Double) -> Double {
+        guard snapToQuiet, !detailWaveform.isEmpty, duration > 0 else { return t }
+        return ClipGain.snapToQuiet(t, peaks: detailWaveform, duration: duration)
+    }
+    /// Turns down the pauses between phrases by `depth` dB (replacing earlier gap sections). Undoable.
+    func lowerGaps(by depth: Double) {
+        guard !measuringSection, let job = selected, let info = job.analysis?.info else { return }
+        let keep = selectedRegions.filter { $0.isGap != true }
+        guard depth > 0 else { setRegions(keep); status = "Gap sections removed"; return }
+        measuringSection = true; status = "Finding the pauses between phrases"
+        let source = job.source
+        Task {
+            defer { measuringSection = false }
+            do {
+                let gaps = try await Task.detached { try AudioEngine.gapRegions(source, info: info, depth: depth, token: Cancellation()) }.value
+                setRegions(keep + gaps)
+                status = gaps.isEmpty ? "No pauses long enough to lower" : "Lowered \(gaps.count) pause\(gaps.count == 1 ? "" : "s") by \(Int(depth)) dB"
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    var versions: [CueVersion] { selected?.versions ?? [] }
+    func saveVersion(named name: String? = nil) {
+        guard let id = selection else { return }
+        let version = CueVersion(name: name ?? "Version \(versions.count + 1)", regions: selectedRegions, edit: selectedEdit)
+        update(id) { $0.versions = ($0.versions ?? []) + [version] }
+        persist(); status = "Saved \(version.name)"
+    }
+    func loadVersion(_ version: CueVersion) {
+        history.record(CueEditState(regions: selectedRegions, edit: selectedEdit))
+        setRegions(version.regions, recordUndo: false); setEdit(version.edit, recordUndo: false)
+        status = "Loaded \(version.name). ⌘Z goes back."
+    }
+    func deleteVersion(_ version: CueVersion) {
+        guard let id = selection else { return }
+        update(id) { $0.versions?.removeAll { $0.id == version.id } }; persist()
+    }
+    func transcribeSelected() {
+        guard !transcribing, let job = selected, let info = job.analysis?.info else { return }
+        transcribing = true; status = "Transcribing on this Mac…"
+        let source = job.source, id = job.id
+        Task {
+            defer { transcribing = false }
+            do {
+                let words = try await Transcriber.transcribe(source, duration: info.duration) { fraction in
+                    Task { @MainActor in self.status = "Transcribing on this Mac… \(Int(fraction * 100))%" }
+                }
+                update(id) { $0.transcript = words }; persist()
+                status = words.isEmpty ? "No speech found" : "Transcript ready: \(words.count) words"
+            } catch { self.error = error.localizedDescription; status = "Transcript not made" }
+        }
+    }
+    func fixDCOffset() { var e = selectedEdit; e.removeDC = true; setEdit(e); status = "DC offset will be removed when the cue is levelled" }
+    func fixPolarity(_ fix: PolarityFix) { var e = selectedEdit; e.polarity = fix; setEdit(e); status = fix == .none ? "Polarity normal" : "\(fix.rawValue) when the cue is levelled" }
 
     // MARK: Live meter (1.5)
     func loadMeterCurve(for url: URL, duration: Double) {
@@ -591,12 +656,17 @@ struct ExportReport: Codable {
     }
     func addRegion(start: Double, end: Double) {
         guard let duration = selected?.analysis?.info.duration else { return }
-        let region = GainRegion(start: min(start, end), end: max(start, end)).normalized(duration: duration)
+        let region = GainRegion(start: snapped(min(start, end)), end: snapped(max(start, end))).normalized(duration: duration)
         // A new section replaces any overlapping ones, like drawing a new clip-gain range in Pro Tools.
         let kept = selectedRegions.filter { $0.end <= region.start || $0.start >= region.end }
         setRegions(kept + [region]); selectedRegion = region.id
     }
     func updateRegion(_ region: GainRegion) {
+        var region = region
+        if let old = selectedRegions.first(where: { $0.id == region.id }) {
+            if old.start != region.start { region.start = snapped(region.start) }
+            if old.end != region.end { region.end = snapped(region.end) }
+        }
         setRegions(selectedRegions.map { $0.id == region.id ? region : $0 })
     }
     func nudgeSelectedRegion(by delta: Double) {
