@@ -15,7 +15,7 @@ struct ClipGainWaveform: View {
     let onChange: (GainRegion) -> Void
     let onSelect: (UUID?) -> Void
 
-    enum Handle { case gain, fadeIn, fadeOut, left, right, body, empty }
+    enum Handle { case gain, fadeIn, fadeOut, left, right, empty }
     @State private var handle: Handle?
     @State private var original: GainRegion?
     @State private var draft: GainRegion?
@@ -53,10 +53,9 @@ struct ClipGainWaveform: View {
             if abs(p.x - x(r.start + r.fadeIn, size.width)) < 8, p.y < 20 { return (.fadeIn, r) }
             if abs(p.x - x(r.end - r.fadeOut, size.width)) < 8, p.y < 20 { return (.fadeOut, r) }
             if p.x >= x0 - 4, p.x <= x1 + 4 {
-                if p.y > size.height * 0.6 && abs(p.x - x0) < 6 { return (.left, r) }
-                if p.y > size.height * 0.6 && abs(p.x - x1) < 6 { return (.right, r) }
-                if p.x >= x0, p.x <= x1, abs(p.y - lineY(r.gain, size.height)) < 7 { return (.gain, r) }
-                if p.x >= x0, p.x <= x1 { return (.body, r) }
+                if p.y > size.height * 0.72 && abs(p.x - x0) < 5 { return (.left, r) }
+                if p.y > size.height * 0.72 && abs(p.x - x1) < 5 { return (.right, r) }
+                if p.x >= x0, p.x <= x1 { return (.gain, r) }   // anywhere inside: drag up or down to change the level
             }
         }
         return (.empty, nil)
@@ -65,7 +64,6 @@ struct ClipGainWaveform: View {
         switch result.0 {
         case .gain: return .resizeUpDown
         case .fadeIn, .fadeOut, .left, .right: return .resizeLeftRight
-        case .body: return .pointingHand
         case .empty: return .iBeam
         }
     }
@@ -82,10 +80,10 @@ struct ClipGainWaveform: View {
         let now = t(value.location.x, size.width)
         switch h {
         case .empty: newRange = (t(value.startLocation.x, size.width), now)
-        case .body: break
         case .gain:
             guard var r = original else { return }
-            r.gain = r.gain - Double(value.translation.height) / Double(size.height / 2 - 16) * 24
+            // Vertical movement only: up is louder. About 0.25 dB per point; hold no keys needed.
+            r.gain = r.gain - Double(value.translation.height) * 0.25
             draft = r.normalized(duration: duration)
         case .fadeIn:
             guard var r = original else { return }
@@ -108,7 +106,6 @@ struct ClipGainWaveform: View {
         case .empty?:
             if moved, let range = newRange, abs(range.1 - range.0) >= GainRegion.minimumLength { onCreate(range.0, range.1) }
             else { onSelect(nil); onSeek(t(value.location.x, size.width)) }
-        case .body?: onSeek(t(value.location.x, size.width))
         default:
             if moved, let draft, draft != original { onChange(draft) }
             else if !moved { onSeek(t(value.location.x, size.width)) }
@@ -164,7 +161,16 @@ struct ClipGainWaveform: View {
             let a = x(r.start, w), b = x(r.end, w), fi = x(r.start + r.fadeIn, w), fo = x(r.end - r.fadeOut, w), y = lineY(r.gain, h)
             var line = Path()
             line.move(to: CGPoint(x: a, y: middle)); line.addLine(to: CGPoint(x: fi, y: y)); line.addLine(to: CGPoint(x: fo, y: y)); line.addLine(to: CGPoint(x: b, y: middle))
-            context.stroke(line, with: .color(isSelected ? Theme.bone : Theme.bone.opacity(0.65)), style: StrokeStyle(lineWidth: isSelected ? 2 : 1.4, lineJoin: .round))
+            context.stroke(line, with: .color(isSelected ? Theme.bone : Theme.bone.opacity(0.65)), style: StrokeStyle(lineWidth: isSelected ? 2.5 : 1.5, lineJoin: .round))
+            if fo - fi > 30 {
+                // Up/down grip in the middle of the level line.
+                let gx = (fi + fo) / 2
+                context.fill(Path(roundedRect: CGRect(x: gx - 11, y: y - 7, width: 22, height: 14), cornerRadius: 4), with: .color(isSelected ? Theme.bone : Theme.bone.opacity(0.7)))
+                var arrows = Path()
+                arrows.move(to: CGPoint(x: gx - 4, y: y - 1.5)); arrows.addLine(to: CGPoint(x: gx, y: y - 5)); arrows.addLine(to: CGPoint(x: gx + 4, y: y - 1.5))
+                arrows.move(to: CGPoint(x: gx - 4, y: y + 1.5)); arrows.addLine(to: CGPoint(x: gx, y: y + 5)); arrows.addLine(to: CGPoint(x: gx + 4, y: y + 1.5))
+                context.stroke(arrows, with: .color(Theme.base), style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+            }
             for hx in [fi, fo] {
                 let square = CGRect(x: hx - 4.5, y: 4, width: 9, height: 9)
                 context.fill(Path(roundedRect: square, cornerRadius: 2), with: .color(isSelected ? Theme.amber : Theme.amber.opacity(0.55)))
@@ -174,10 +180,18 @@ struct ClipGainWaveform: View {
             let label = r.isReference ? "★ Sounds right" + (abs(r.gain) >= 0.05 ? " · " + signed(r.gain) + " dB" : "") : signed(r.gain) + " dB"
             if b - a > 44 {
                 context.draw(Text(label).font(.system(size: 10.5, weight: .semibold)).monospacedDigit().foregroundColor(r.isReference ? Theme.lime : Theme.bone),
-                             at: CGPoint(x: (fi + fo) / 2, y: max(24, y - 11)))
+                             at: CGPoint(x: (fi + fo) / 2, y: max(24, y - 18)))
             }
         }
 
+        // While dragging a level, show it large in the middle of the section.
+        if handle == .gain, let d = draft {
+            let cx = (x(d.start, w) + x(d.end, w)) / 2
+            let text = Text(signed(d.gain) + " dB").font(.system(size: 20, weight: .bold)).monospacedDigit().foregroundColor(Theme.base)
+            let bubble = CGRect(x: cx - 52, y: middle - 18, width: 104, height: 36)
+            context.fill(Path(roundedRect: bubble, cornerRadius: 10), with: .color(d.gain >= 0 ? Theme.teal : Theme.amber))
+            context.draw(text, at: CGPoint(x: cx, y: middle))
+        }
         let px = duration > 0 ? min(1, max(0, position / duration)) * w : 0
         var cursor = Path(); cursor.move(to: CGPoint(x: px, y: 0)); cursor.addLine(to: CGPoint(x: px, y: h))
         context.stroke(cursor, with: .color(Theme.bone), lineWidth: 1)
@@ -219,14 +233,14 @@ struct ClipGainBar: View {
             } else {
                 HStack {
                     Text(regions.isEmpty
-                         ? "Drag across the waveform to select a section, then drag its line up or down. Drag the orange squares to set fades."
-                         : "Click a section to edit it, or drag across empty space for a new one. Mark one as Sounds right, then Match the others to it.").hint()
+                         ? "Drag across the waveform to mark a section, then drag inside it up to make it louder or down to make it quieter. Orange squares set the fades."
+                         : "Drag inside a section up or down to change its level, or drag across empty space for a new one. Mark one as Sounds right, then Match the others to it.").hint()
                     Spacer()
                     if !regions.isEmpty { Button("Clear all") { model.clearRegions() }.buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.muted) }
                 }
             }
             if model.outputIsStale, model.selected?.output != nil {
-                Text("Edits apply when you level the cue again.").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.amber)
+                Text("Click Done editing to hear it: the cue is levelled again with your edits.").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.amber)
             }
         }.font(.system(size: 12))
     }

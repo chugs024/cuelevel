@@ -451,7 +451,12 @@ struct ContentView: View {
                     .frame(width: 190).disabled(job.output == nil || model.clipEditing)
                 Button {
                     model.clipEditing.toggle()
-                    if model.clipEditing { model.switchPreview(false) } else { model.selectedRegion = nil }
+                    if model.clipEditing { model.switchPreview(false) }
+                    else {
+                        model.selectedRegion = nil
+                        // Render straight away so the edits can be heard in Levelled.
+                        if model.outputIsStale || (job.output == nil && !ClipGain.active(job.clipGain).isEmpty) { model.processSelected() }
+                    }
                 } label: {
                     Label(model.clipEditing ? "Done editing" : "Clip gain" + (ClipGain.active(job.clipGain).isEmpty ? "" : " · \(ClipGain.active(job.clipGain).count)"), systemImage: "slider.vertical.3")
                 }.buttonStyle(CLButton(kind: model.clipEditing ? .primary : .ghost)).disabled(job.analysis == nil || model.busy)
