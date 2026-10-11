@@ -22,6 +22,8 @@ struct CueJob: Identifiable, Codable {
     var exportURL: URL?
     /// Clip gain sections drawn on this cue (1.2). Applied when the cue is levelled; the output replaces the normal one.
     var clipGain: [GainRegion]? = nil
+    /// In/out points, edge fades and markers (1.5).
+    var edit: CueEdit? = nil
 }
 struct SavedPreset: Codable, Identifiable { var id = UUID(); var name: String; var settings: ProcessingSettings }
 struct Session: Codable {
@@ -30,6 +32,7 @@ struct Session: Codable {
     var watchFolder: URL? = nil; var watching: Bool? = nil; var autoRecommend: Bool? = nil
     var settingsRevision: Int? = nil
     var evenOut: Bool? = nil
+    var autoTrim: Bool? = nil
 }
 /// Common loudness specifications. Targets and ceilings only; nothing else changes.
 struct LoudnessPreset: Identifiable, Hashable {
@@ -97,6 +100,8 @@ struct ExportReport: Codable {
     @Published var autoRecommend = false { didSet { persist() } }
     /// Quick Level: even out clearly loud or quiet stretches with clip gain before levelling (1.4). On by default.
     @Published var evenOut = true { didSet { persist() } }
+    /// Quick Level: trim silence at the start and end of audio files (video keeps its length; the head is silenced instead).
+    @Published var autoTrim = false { didSet { persist() } }
     private var watchTimer: Timer?
     /// Files seen in the watch folder, with their last observed size, so only new, fully written files are added.
     private var watchSeen: [String: Int64] = [:]
@@ -114,7 +119,10 @@ struct ExportReport: Codable {
     var outputIsStale: Bool {
         guard let job = selected, var used = job.output?.settings else { return false }
         if ClipGain.active(used.clipGain) != ClipGain.active(job.clipGain) { return true }
-        used.clipGain = nil
+        let duration = job.analysis?.info.duration ?? 0
+        func audible(_ e: CueEdit?) -> CueEdit? { e.map { var n = $0.normalized(duration: duration); n.markers = []; return n.changesAudio(duration: duration) ? n : nil } }
+        if audible(used.edit) != audible(job.edit) { return true }
+        used.clipGain = nil; used.edit = nil
         // Per-cue recommendations and Quick Level legitimately change some settings per cue; compare what the user controls.
         if autoRecommend || used.format == .lossless {
             return used.target != settings.target || used.peak != settings.peak || used.mode != settings.mode || (used.format == .lossless) != (settings.format == .lossless || quickLevel) || (used.format == .lossless && used.peakLimit != settings.peakLimit)
@@ -132,8 +140,8 @@ struct ExportReport: Codable {
         references = (try? ReferenceLibrary.load(from: directory.appendingPathComponent(ReferenceLibrary.folderName, isDirectory: true))) ?? ReferenceLibrary()
         if let data = try? Data(contentsOf: directory.appendingPathComponent("session.json")), let saved = try? JSONDecoder().decode(Session.self, from: data) {
             jobs = saved.jobs; settings = saved.settings; presets = saved.presets
-            quickFolder = saved.quickFolder; quickLevel = (saved.quickLevel ?? false) && saved.quickFolder != nil
-            watchFolder = saved.watchFolder; autoRecommend = saved.autoRecommend ?? false; evenOut = saved.evenOut ?? true
+            quickFolder = saved.quickFolder; quickLevel = saved.quickLevel ?? false
+            watchFolder = saved.watchFolder; autoRecommend = saved.autoRecommend ?? false; evenOut = saved.evenOut ?? true; autoTrim = saved.autoTrim ?? false
             if saved.watching == true, saved.watchFolder != nil { startWatching() }
             settings.cut = max(2, settings.cut)
             // 1.1.1: the standard is now −18 LUFS. A session still on the old −23 default moves to −18 / −1 dBTP once;
@@ -164,7 +172,7 @@ struct ExportReport: Codable {
         status = jobs.isEmpty ? "Add files to begin" : "Previous session restored"
     }
     func persist() {
-        let snapshot = Session(jobs: jobs, settings: settings, presets: presets, quickLevel: quickLevel, quickFolder: quickFolder, watchFolder: watchFolder, watching: watching, autoRecommend: autoRecommend, settingsRevision: Self.settingsRevision, evenOut: evenOut)
+        let snapshot = Session(jobs: jobs, settings: settings, presets: presets, quickLevel: quickLevel, quickFolder: quickFolder, watchFolder: watchFolder, watching: watching, autoRecommend: autoRecommend, settingsRevision: Self.settingsRevision, evenOut: evenOut, autoTrim: autoTrim)
         if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: directory.appendingPathComponent("session.json"), options: .atomic) }
     }
     func changeMode(_ mode: ContentMode) { settings.setMode(mode) }
@@ -184,7 +192,7 @@ struct ExportReport: Codable {
         }
         guard let first = added.first else { return }
         selection = first; status = "Added \(added.count) file\(added.count == 1 ? "" : "s")"; persist()
-        if quickLevel && quickFolder != nil {
+        if quickLevel {
             // Files dropped while a batch is running are picked up when it finishes.
             if !busy { run(ids: added, render: true) } else { status = "Added \(added.count) to Quick Level — waiting for the current batch" }
         } else if !busy { run(ids: added, render: false) }   // measure everything that was added, not only the selection
@@ -206,7 +214,7 @@ struct ExportReport: Codable {
         busy = true; player.pause(); playing = false
         let cancellation = Cancellation(); token = cancellation
         // Quick Level always renders the lossless gain-only path, whatever output type a preset selected.
-        let quick = render && (quickOverride || (quickLevel && quickFolder != nil))
+        let quick = render && (quickOverride || quickLevel)
         let options: ProcessingSettings = { var o = settings; if quick { o.format = .lossless }; return o }()
         Task {
             for id in ids {
@@ -238,7 +246,12 @@ struct ExportReport: Codable {
                         evened = auto.count
                     }
                     var cueOptions = Self.settingsForCue(options, analysis: analysis, library: references, recommend: autoRecommend && !quick)
+                    if render && quick && autoTrim, let stats = analysis.stereo {
+                        let duration = analysis.info.duration
+                        update(id) { $0.edit = CueEdit.trimmedToSound(stats, duration: duration, keeping: $0.edit ?? CueEdit()) }
+                    }
                     cueOptions.clipGain = jobs.first(where: { $0.id == id })?.clipGain
+                    cueOptions.edit = jobs.first(where: { $0.id == id })?.edit
                     if render {
                         let renderDirectory = directory.appendingPathComponent("Cache/\(id.uuidString)/\(UUID().uuidString)", isDirectory: true)
                         let result = try await Task.detached {
@@ -248,8 +261,10 @@ struct ExportReport: Codable {
                         }.value
                         if let previous = current.output { try? FileManager.default.removeItem(at: previous.url.deletingLastPathComponent()) }
                         update(id) { $0.output = result; $0.exportURL = nil; $0.audioExportURL = nil; $0.progress = 1; $0.status = result.warnings.isEmpty ? .ready : .review; $0.message = result.warnings.isEmpty ? "Ready to export" : "Review notes before export" }
-                        if quick, let folder = quickFolder {
-                            let destination = Self.uniqueDestination(in: folder, name: current.source.deletingPathExtension().lastPathComponent + "." + result.url.pathExtension)
+                        if quick {
+                            let folder = outputFolder
+                            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                            let destination = Self.uniqueDestination(in: folder, name: Self.levelledName(for: current.source, target: result.settings.target, ext: result.url.pathExtension))
                             let sources = jobs.map(\.source)
                             do {
                                 try await Task.detached { try Self.atomicCopy(from: result.url, to: destination, sources: sources, allowReplace: false) }.value
@@ -270,10 +285,10 @@ struct ExportReport: Codable {
             workingID = nil; busy = false; token = nil
             let stopped = jobs.contains { $0.status == .cancelled }
             let thisRunStopped = (try? cancellation.check()) == nil
-            status = stopped ? "Stopped. Remaining files stay in the queue." : (quick && quickFolder == nil) ? "Quick Level finished. Listen in Levelled, then Export to save." : quick ? "Quick Level finished. Levelled files are in \(quickFolder?.lastPathComponent ?? "the output folder")." : "Finished. Review your results before export."
+            status = stopped ? "Stopped. Remaining files stay in the queue." : quick ? "Quick Level finished. Levelled files are in \(outputFolderDisplay)." : "Finished. Review your results before export."
             persist()
-            if quick, let folder = quickFolder { writeShowReport(into: folder) }
-            if quickLevel, quickFolder != nil, !thisRunStopped {
+            if quick { writeShowReport(into: reportsFolder, dated: quickFolder == nil) }
+            if quickLevel, !thisRunStopped {
                 let waiting = jobs.filter { $0.output == nil && $0.status == .queued }.map(\.id)
                 if !waiting.isEmpty { run(ids: waiting, render: true) }
             }
@@ -295,6 +310,7 @@ struct ExportReport: Codable {
         if processedPreview && job.output == nil { processedPreview = false }
         let url = processedPreview ? job.output!.url : job.source
         let item = AVPlayerItem(url: url); player.replaceCurrentItem(with: item); applyVolume(); applyPreviewMix()
+        loadMeterCurve(for: url, duration: job.analysis?.info.duration ?? 0)
         playerError = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             if item.status == .failed { Task { @MainActor in self?.status = "Native preview is unavailable for this format. Processing may still be supported; export to WAV for audio preview." } }
         }
@@ -361,11 +377,19 @@ struct ExportReport: Codable {
     @Published var timeView = TimeView()
     @Published var detailWaveform: [Float] = []
     @Published var sectionLoudness: [UUID: Double] = [:]
-    @Published private(set) var history = EditHistory<[GainRegion]>()
+    @Published private(set) var history = EditHistory<CueEditState>()
+    /// Loop playback of the selected section (or the in–out range), with pre/post-roll in seconds.
+    @Published var looping = false
+    @Published var preRoll = 1.0
+    /// Momentary loudness (100 ms steps) of whatever is loaded in the player, for the live meter.
+    @Published var meterCurve: [Float] = []
+    private var meterCache: [URL: [Float]] = [:]
+    @Published var showShortcuts = false
+    var selectedEdit: CueEdit { selected?.edit ?? CueEdit() }
     private var detailFor: UUID?
     private var sectionStop: Any?
     var selectedRegions: [GainRegion] { selected?.clipGain ?? [] }
-    var previewAttenuation: Double { -20 * log10(ClipGain.previewScale(selected?.clipGain)) }
+    var previewAttenuation: Double { -20 * log10(ClipGain.previewScale(selected?.clipGain, edit: selected?.edit, duration: duration)) }
 
     /// Replaces the selected cue's regions (each normalised to the cue's length) and saves the session.
     func setRegions(_ regions: [GainRegion], recordUndo: Bool = true) {
@@ -373,7 +397,7 @@ struct ExportReport: Codable {
         let before = selectedRegions
         let after = regions.map { $0.normalized(duration: duration) }.sorted { $0.start < $1.start }
         guard after != before else { return }
-        if recordUndo { history.record(before) }
+        if recordUndo { history.record(CueEditState(regions: before, edit: selectedEdit)) }
         update(id) { $0.clipGain = after }
         // Loudness readings are only valid for the edits they were measured with.
         sectionLoudness = [:]
@@ -393,11 +417,112 @@ struct ExportReport: Codable {
             } catch { self.error = error.localizedDescription }
         }
     }
-    func undoRegions() { if let previous = history.undo(current: selectedRegions) { setRegions(previous, recordUndo: false) } }
-    func redoRegions() { if let next = history.redo(current: selectedRegions) { setRegions(next, recordUndo: false) } }
+    func undoRegions() { if let previous = history.undo(current: CueEditState(regions: selectedRegions, edit: selectedEdit)) { restore(previous) } }
+    func redoRegions() { if let next = history.redo(current: CueEditState(regions: selectedRegions, edit: selectedEdit)) { restore(next) } }
+    private func restore(_ state: CueEditState) { setRegions(state.regions, recordUndo: false); setEdit(state.edit, recordUndo: false) }
+
+    // MARK: In/out points, fades, markers, mute, loop (1.5)
+    func setEdit(_ edit: CueEdit, recordUndo: Bool = true) {
+        guard let id = selection, let duration = selected?.analysis?.info.duration, duration > 0 else { return }
+        let next = edit.normalized(duration: duration)
+        guard next != selectedEdit else { return }
+        if recordUndo { history.record(CueEditState(regions: selectedRegions, edit: selectedEdit)) }
+        update(id) { $0.edit = next }
+        applyPreviewMix(); persist()
+    }
+    func setInPoint(_ t: Double? = nil) { var e = selectedEdit; e.inPoint = t ?? playhead; setEdit(e) }
+    func setOutPoint(_ t: Double? = nil) { var e = selectedEdit; e.outPoint = t ?? playhead; setEdit(e) }
+    func clearTrim() { var e = selectedEdit; e.inPoint = 0; e.outPoint = nil; setEdit(e) }
+    func trimToSound() {
+        guard let analysis = selected?.analysis else { return }
+        guard let stats = analysis.stereo else { error = "Measure the cue again to find its silence."; return }
+        setEdit(CueEdit.trimmedToSound(stats, duration: analysis.info.duration, keeping: selectedEdit))
+        status = "Trimmed to the sound: \(String(format: "%.2f", selectedEdit.inPoint)) s in, out at \(String(format: "%.2f", selectedEdit.end(duration: analysis.info.duration))) s"
+    }
+    /// Copies this cue's edge fades (lengths and shape) to every cue.
+    func applyFadesToAllCues() {
+        let source = selectedEdit
+        for i in jobs.indices {
+            var e = jobs[i].edit ?? CueEdit(); e.fadeIn = source.fadeIn; e.fadeOut = source.fadeOut; e.fadeShape = source.fadeShape
+            if let d = jobs[i].analysis?.info.duration { e = e.normalized(duration: d) }
+            jobs[i].edit = e
+        }
+        persist(); status = "Fades applied to all \(jobs.count) cues"
+    }
+    func addMarker(at t: Double? = nil) {
+        var e = selectedEdit
+        let time = t ?? playhead
+        e.markers.append(CueMarker(time: time, name: "Marker \(e.markers.count + 1)"))
+        setEdit(e)
+    }
+    func renameMarker(_ id: UUID, to name: String) {
+        var e = selectedEdit
+        guard let i = e.markers.firstIndex(where: { $0.id == id }) else { return }
+        e.markers[i].name = name; setEdit(e, recordUndo: false)
+    }
+    func deleteMarker(_ id: UUID) { var e = selectedEdit; e.markers.removeAll { $0.id == id }; setEdit(e) }
+    func toggleMuteSelected() {
+        guard var r = selectedRegions.first(where: { $0.id == selectedRegion }) else { status = "Select a section to mute it"; return }
+        r.muted = r.muted == true ? nil : true; updateRegion(r)
+    }
+    /// Plays the selected section (or the in–out range) with pre/post-roll; loops when Loop is on.
+    func playRange() {
+        let duration = self.duration
+        let range: (Double, Double)
+        if let r = selectedRegions.first(where: { $0.id == selectedRegion }) { range = (r.start, r.end) }
+        else { let e = selectedEdit.normalized(duration: duration); range = (e.inPoint, e.end(duration: duration)) }
+        if let sectionStop { player.removeTimeObserver(sectionStop); self.sectionStop = nil }
+        let start = max(0, range.0 - preRoll), stop = min(duration, range.1 + preRoll)
+        seek(start)
+        sectionStop = player.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: max(start + 0.05, stop - 0.02), preferredTimescale: 600))], queue: .main) { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.looping { self.seek(start); self.player.play(); return }
+                self.player.pause(); self.playing = false
+                if let s = self.sectionStop { self.player.removeTimeObserver(s); self.sectionStop = nil }
+            }
+        }
+        player.play(); playing = true
+    }
+
+    // MARK: Live meter (1.5)
+    func loadMeterCurve(for url: URL, duration: Double) {
+        if let cached = meterCache[url] { meterCurve = cached; return }
+        meterCurve = []
+        Task {
+            guard let curve = try? await Task.detached(operation: { try AudioEngine.momentaryLoudness(url, duration: duration, token: Cancellation()) }).value else { return }
+            meterCache[url] = curve
+            if player.currentItem.flatMap({ ($0.asset as? AVURLAsset)?.url }) == url { meterCurve = curve }
+        }
+    }
+    /// Momentary and short-term loudness (LUFS) and sample peak (dBFS) at time t of what is playing, including live edits.
+    func meterReading(at t: Double) -> (momentary: Double?, shortTerm: Double?, peak: Double?) {
+        let editGain: Double = {
+            guard clipEditing, !processedPreview else { return 0 }
+            let g = ClipGain.envelope(at: t, regions: selected?.clipGain, edit: selected?.edit, duration: duration)
+            return g > 0 ? 20 * log10(g) : -120
+        }()
+        var momentary: Double?, shortTerm: Double?
+        let i = Int(t * 10)
+        if !meterCurve.isEmpty, i >= 0, i < meterCurve.count {
+            let m = Double(meterCurve[i]); momentary = m > -69.9 ? m + editGain : nil
+            let window = meterCurve[max(0, i - 29)...i].map { pow(10, Double($0) / 10) }
+            let s = 10 * log10(window.reduce(0, +) / Double(window.count))
+            shortTerm = s > -69.9 ? s + editGain : nil
+        }
+        let wave = (clipEditing && !processedPreview && !detailWaveform.isEmpty) ? detailWaveform : currentWaveform
+        var peak: Double?
+        if !wave.isEmpty, duration > 0 {
+            let centre = Int(t / duration * Double(wave.count)), span = max(1, Int(0.15 / duration * Double(wave.count)))
+            let lo = max(0, centre - span), hi = min(wave.count - 1, centre + span)
+            if lo <= hi, let p = wave[lo...hi].max(), p > 0 { peak = 20 * log10(Double(p)) + editGain }
+        }
+        return (momentary, shortTerm, peak)
+    }
 
     private func editingChanged() {
         history.reset(); sectionLoudness = [:]; timeView = TimeView()
+        if !clipEditing, let s = sectionStop { player.removeTimeObserver(s); sectionStop = nil }
         if clipEditing { loadDetailWaveform() }
         applyPreviewMix()
     }
@@ -425,21 +550,13 @@ struct ExportReport: Codable {
         timeView.start = timeView.resolved(duration: duration).start
     }
     /// Plays just the selected section (or from the playhead if none), stopping at its end.
-    func playSelectedSection() {
-        guard let r = selectedRegions.first(where: { $0.id == selectedRegion }) else { playPause(); return }
-        if let sectionStop { player.removeTimeObserver(sectionStop); self.sectionStop = nil }
-        seek(max(0, r.start - 0.5))
-        sectionStop = player.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: r.end + 0.5, preferredTimescale: 600))], queue: .main) { [weak self] in
-            Task { @MainActor in guard let self else { return }; self.player.pause(); self.playing = false
-                if let stop = self.sectionStop { self.player.removeTimeObserver(stop); self.sectionStop = nil } }
-        }
-        player.play(); playing = true
-    }
+    func playSelectedSection() { playRange() }
     /// Plays the original with the clip gain edits applied in real time (scaled so boosts fit; see previewAttenuation).
     func applyPreviewMix() {
         guard let item = player.currentItem else { return }
-        guard clipEditing, !processedPreview, !ClipGain.active(selected?.clipGain).isEmpty else { item.audioMix = nil; return }
-        let points = ClipGain.previewPoints(selected?.clipGain)
+        let duration = self.duration
+        guard clipEditing, !processedPreview, !ClipGain.active(selected?.clipGain).isEmpty || (selected?.edit?.changesAudio(duration: duration) ?? false) else { item.audioMix = nil; return }
+        let points = ClipGain.previewPoints(selected?.clipGain, edit: selected?.edit, duration: duration)
         Task {
             guard let track = try? await item.asset.loadTracks(withMediaType: .audio).first else { return }
             let parameters = AVMutableAudioMixInputParameters(track: track)
@@ -553,7 +670,10 @@ struct ExportReport: Codable {
     func exportSelected(audioCopy: Bool = false) {
         guard !busy, let job = selected, let result = job.output else { return }
         guard let exportSource = audioCopy ? result.audioCompanion : result.url else { return }
-        let panel = NSSavePanel(); panel.nameFieldStringValue = exportSource.lastPathComponent
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = Self.levelledName(for: job.source, target: result.settings.target, ext: exportSource.pathExtension)
+        try? FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        panel.directoryURL = outputFolder
         panel.allowedContentTypes = [UTType(filenameExtension: exportSource.pathExtension) ?? .data]
         guard panel.runModal() == .OK, let target = panel.url else { return }
         busy = true; status = "Exporting \(target.lastPathComponent)…"
@@ -568,6 +688,25 @@ struct ExportReport: Codable {
         }
     }
     /// A destination in folder that never overwrites an existing file: "Name.mov", then "Name 2.mov", "Name 3.mov"…
+    // MARK: Output folder and naming (1.5)
+    /// Everything CueLevel saves goes to Desktop › CueLevel unless another folder is chosen:
+    ///   Levelled/  <original name>_LVL-18.<ext>   (a second copy becomes "…_LVL-18 2.wav"; nothing is overwritten)
+    ///   Reports/   CueLevel Report <date>.csv and .html
+    nonisolated static var defaultRoot: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/CueLevel", isDirectory: true) }
+    nonisolated static var defaultLevelledFolder: URL { defaultRoot.appendingPathComponent("Levelled", isDirectory: true) }
+    nonisolated static var defaultReportsFolder: URL { defaultRoot.appendingPathComponent("Reports", isDirectory: true) }
+    var outputFolder: URL { quickFolder ?? Self.defaultLevelledFolder }
+    var reportsFolder: URL { quickFolder ?? Self.defaultReportsFolder }
+    var outputFolderDisplay: String { quickFolder.map(\.lastPathComponent) ?? "Desktop › CueLevel › Levelled" }
+    nonisolated static func levelledName(for source: URL, target: Double, ext: String) -> String {
+        let t = target == target.rounded() ? String(format: "%.0f", target) : String(format: "%.1f", target)
+        return source.deletingPathExtension().lastPathComponent + "_LVL" + t + (ext.isEmpty ? "" : "." + ext)
+    }
+    func useDefaultOutputFolder() { quickFolder = nil; persist(); status = "Saving to \(outputFolderDisplay)" }
+    func revealOutputFolder() {
+        try? FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([outputFolder])
+    }
     nonisolated static func uniqueDestination(in folder: URL, name: String) -> URL {
         var destination = folder.appendingPathComponent(name); var n = 2
         let stem = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
@@ -577,11 +716,9 @@ struct ExportReport: Codable {
     /// Turns Quick Level on (choosing an output folder if needed) with lossless gain-only settings at -18 LUFS / -1 dBTP.
     func setQuickLevel(_ on: Bool) {
         guard on else { quickLevel = false; status = "Quick Level off"; persist(); return }
-        if quickFolder == nil { chooseQuickFolder() }
-        guard quickFolder != nil else { return }
         settings.format = .lossless; settings.target = Self.quickTarget; settings.peak = Self.quickCeiling
         quickLevel = true; persist()
-        status = "Quick Level on. Drop files to level them losslessly into \(quickFolder!.lastPathComponent)."
+        status = "Level on drop is on. Dropped files are levelled losslessly into \(outputFolderDisplay)."
     }
     func chooseQuickFolder() {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true; panel.allowsMultipleSelection = false
@@ -601,7 +738,7 @@ struct ExportReport: Codable {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true; panel.allowsMultipleSelection = false
         panel.message = "Choose a folder to watch. New audio and video files saved into it are added to CueLevel automatically."
         guard panel.runModal() == .OK, let folder = panel.url else { return }
-        if let quickFolder, Self.sameFolder(folder, quickFolder) { error = "The watch folder must be different from the Quick Level output folder, or levelled files would be picked up again."; return }
+        if Self.sameFolder(folder, outputFolder) { error = "The watch folder must be different from the Quick Level output folder, or levelled files would be picked up again."; return }
         watchFolder = folder; if watching { startWatching() } else { persist() }
     }
     func setWatching(_ on: Bool) {
@@ -640,7 +777,7 @@ struct ExportReport: Codable {
     /// One row per processed cue, for the show file: levels before/after, gain, shortfall, limiting and every note.
     nonisolated static func showReportRows(_ jobs: [CueJob]) -> [[String]] {
         func f(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "" }
-        var rows = [["Cue", "Saved as", "Duration", "Type", "Mode", "Output", "Source LUFS", "Source dBTP", "Source LRA", "Output LUFS", "Output dBTP", "Gain dB", "Below target dB", "Limited dB", "Status", "Notes"]]
+        var rows = [["Cue", "Saved as", "Duration", "Type", "Mode", "Output", "Source LUFS", "Source dBTP", "Source LRA", "Output LUFS", "Output dBTP", "Gain dB", "Below target dB", "Limited dB", "Status", "Notes", "Edits", "Markers"]]
         for job in jobs {
             guard let analysis = job.analysis else { continue }
             let out = job.output
@@ -651,9 +788,24 @@ struct ExportReport: Codable {
                          analysis.info.isVideo ? "Video" : "Audio", out?.settings.mode.rawValue ?? "", out?.settings.format.rawValue ?? "",
                          f(analysis.levels.integrated), f(analysis.levels.truePeak), f(analysis.levels.loudnessRange),
                          f(out?.levels.integrated), f(out?.levels.truePeak), f(gain), f(out?.shortfall), f(out?.limiting),
-                         job.status.rawValue, notes.joined(separator: " | ")])
+                         job.status.rawValue, notes.joined(separator: " | "), editSummary(job, duration: analysis.info.duration),
+                         (job.edit?.markers ?? []).map { "\($0.name) @ \(clockText($0.time))" }.joined(separator: " | ")])
         }
         return rows
+    }
+    nonisolated static func editSummary(_ job: CueJob, duration: Double) -> String {
+        var parts: [String] = []
+        if let e = job.edit?.normalized(duration: duration) {
+            if e.isTrimmed(duration: duration) { parts.append("trimmed \(clockText(e.inPoint))–\(clockText(e.end(duration: duration)))") }
+            if e.hasFades { parts.append("fades \(Int(e.fadeIn * 1000))/\(Int(e.fadeOut * 1000)) ms \(e.fadeShape.rawValue.lowercased())") }
+        }
+        let sections = ClipGain.active(job.clipGain)
+        let muted = sections.filter { $0.muted == true }.count, auto = sections.filter { $0.isAuto == true && $0.muted != true }.count
+        let manual = sections.count - muted - auto
+        if auto > 0 { parts.append("\(auto) evened") }
+        if manual > 0 { parts.append("\(manual) clip gain") }
+        if muted > 0 { parts.append("\(muted) muted") }
+        return parts.joined(separator: ", ")
     }
     nonisolated static func showReportCSV(_ jobs: [CueJob]) -> String {
         showReportRows(jobs).map { row in row.map { cell in
@@ -678,12 +830,15 @@ struct ExportReport: Codable {
         """
     }
     /// Quick Level writes/refreshes "CueLevel Report.csv" and ".html" in its output folder after each batch.
-    func writeShowReport(into folder: URL) {
+    func writeShowReport(into folder: URL, dated: Bool = false) {
         let processed = jobs.filter { $0.output != nil }
         guard !processed.isEmpty else { return }
         do {
-            try Data(Self.showReportCSV(processed).utf8).write(to: folder.appendingPathComponent("CueLevel Report.csv"), options: .atomic)
-            try Data(Self.showReportHTML(processed, title: "CueLevel show report").utf8).write(to: folder.appendingPathComponent("CueLevel Report.html"), options: .atomic)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+            let stem = dated ? "CueLevel Report \(formatter.string(from: Date()))" : "CueLevel Report"
+            try Data(Self.showReportCSV(processed).utf8).write(to: folder.appendingPathComponent(stem + ".csv"), options: .atomic)
+            try Data(Self.showReportHTML(processed, title: "CueLevel show report").utf8).write(to: folder.appendingPathComponent(stem + ".html"), options: .atomic)
         } catch { status = "Levelled files saved; the show report could not be written: \(error.localizedDescription)" }
     }
     func exportShowReport() {

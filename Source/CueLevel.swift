@@ -214,6 +214,7 @@ struct ContentView: View {
         .sheet(isPresented: $model.showSavePreset) { presetSheet }
         .sheet(isPresented: $model.showAbout) { aboutSheet }
         .sheet(isPresented: $updater.showSheet) { updateSheet }
+        .sheet(isPresented: $model.showShortcuts) { ShortcutSheet { model.showShortcuts = false } }
         .sheet(isPresented: Binding(get: { model.referenceDraft != nil }, set: { if !$0 { model.referenceDraft = nil } })) { referenceSheet }
     }
     var dropOverlay: some View {
@@ -223,7 +224,7 @@ struct ContentView: View {
             VStack(spacing: 10) {
                 LogoMark().frame(width: 64, height: 64)
                 Text(model.quickLevel ? "Drop to level" : "Drop to add to the queue").font(.system(size: 22, weight: .semibold))
-                Text(model.quickLevel ? "Levelled copies go to \(model.quickFolder?.lastPathComponent ?? "your output folder")" : "Each file is measured as soon as it arrives").hint()
+                Text(model.quickLevel ? "Levelled copies go to \(model.outputFolderDisplay)" : "Each file is measured as soon as it arrives").hint()
             }
         }.allowsHitTesting(false)
     }
@@ -276,7 +277,14 @@ struct ContentView: View {
                 Label(job.output == nil ? "Quick Level this cue" : "Quick Level again", systemImage: "bolt.fill")
                     .font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity)
             }.buttonStyle(CLButton(kind: .primary)).disabled(model.busy)
-            Text("To \(lufs(model.settings.target)) LUFS with one gain change\(model.evenOut ? ", evening out loud and quiet stretches first" : ""). Your original is never changed.").hint()
+            Text("To \(lufs(model.settings.target)) LUFS with one gain change\(model.evenOut ? ", evening out loud and quiet stretches first" : "")\(model.autoTrim ? ", silence trimmed" : ""). Your original is never changed.").hint()
+            HStack(spacing: 4) {
+                Image(systemName: "folder").foregroundStyle(Theme.muted)
+                Text("\(model.outputFolderDisplay) › \(Workspace.levelledName(for: job.source, target: model.settings.target, ext: job.analysis?.info.isVideo == true ? "mov" : "wav"))")
+                    .lineLimit(1).truncationMode(.middle).foregroundStyle(Theme.muted)
+                Spacer(minLength: 2)
+                Button("Open") { model.revealOutputFolder() }.buttonStyle(.plain).foregroundStyle(Theme.teal)
+            }.font(.system(size: 11)).help("Levelled copies are saved here with this name. Nothing is ever overwritten.")
             if let output = job.output, let analysis = job.analysis {
                 let evened = (job.clipGain ?? []).filter { $0.isAuto == true }.count
                 VStack(alignment: .leading, spacing: 6) {
@@ -305,10 +313,8 @@ struct ContentView: View {
             Toggle(isOn: Binding(get: { model.quickLevel }, set: { model.setQuickLevel($0) })) { EmptyView() }.toggleStyle(CLSwitch()).disabled(model.busy)
             Text("Level on drop").font(.system(size: 13, weight: .semibold)).help("When on, every file you drop is Quick Levelled straight into the chosen folder")
             Button { model.chooseQuickFolder() } label: {
-                if let folder = model.quickFolder {
-                    (Text("saving to ").foregroundColor(Theme.muted) + Text(folder.lastPathComponent).foregroundColor(Theme.bone.opacity(0.88))).font(.system(size: 12.5))
-                } else { Text("Choose output folder").font(.system(size: 12.5)).foregroundStyle(Theme.teal) }
-            }.buttonStyle(.plain).help(model.quickFolder?.path ?? "Choose where levelled copies are saved")
+                (Text("saving to ").foregroundColor(Theme.muted) + Text(model.outputFolderDisplay).foregroundColor(Theme.bone.opacity(0.88))).font(.system(size: 12.5))
+            }.buttonStyle(.plain).help("Levelled copies go to \(model.outputFolder.path). Click to choose another folder.")
         }
         .padding(.leading, 6).padding(.trailing, 12).padding(.vertical, 5)
         .background(Capsule().fill(model.quickLevel ? Theme.teal.opacity(0.10) : Theme.raised))
@@ -518,6 +524,7 @@ struct ContentView: View {
                 Toggle("Match loudness", isOn: $model.matchPreview).toggleStyle(.checkbox).onChange(of: model.matchPreview) { _ in model.applyVolume() }.disabled(job.output == nil)
                     .help("Plays original and levelled versions at equal loudness so you compare sound, not volume")
             }.font(.system(size: 12)).foregroundStyle(Theme.muted)
+            LoudnessMeterBar(reading: model.meterReading(at: model.playhead), target: job.output?.settings.target ?? model.settings.target, ready: !model.meterCurve.isEmpty)
             if job.analysis?.info.isVideo == true {
                 DisclosureGroup("Picture") { VideoPlayer(player: model.player).frame(height: 220).clipShape(RoundedRectangle(cornerRadius: 8)).padding(.top, 8) }
                     .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.text)
@@ -620,7 +627,7 @@ struct ContentView: View {
             LogoMark().frame(width: 88, height: 88)
             Text(model.quickLevel ? "Drop cues to level them" : "Drop cues to get started").font(.system(size: 26, weight: .semibold)).tracking(-0.4)
             Text(model.quickLevel
-                 ? "Each file is brought to \(lufs(model.settings.target)) LUFS with one exact gain change and saved to \(model.quickFolder?.lastPathComponent ?? "your output folder"). Picture and audio quality are untouched."
+                 ? "Each file is brought to \(lufs(model.settings.target)) LUFS with one exact gain change and saved to \(model.outputFolderDisplay). Picture and audio quality are untouched."
                  : "Turn on Quick Level to level dropped files automatically, or add files to measure and process them one by one.")
                 .font(.system(size: 13.5)).foregroundStyle(Theme.muted).multilineTextAlignment(.center).frame(maxWidth: 460)
             HStack(spacing: 10) {
@@ -642,6 +649,7 @@ struct ContentView: View {
                     valueRow("Target", value: $model.settings.target, range: -30 ... -12, unit: "LUFS")
                     valueRow("Peak ceiling", value: $model.settings.peak, range: -6 ... -1, unit: "dBTP")
                     Toggle(isOn: $model.evenOut) { Text("Even out loud and quiet stretches").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
+                    Toggle(isOn: $model.autoTrim) { Text("Trim silence at start and end").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
                     Text(model.evenOut ? "Quick Level turns stretches more than 2 dB louder or quieter than the rest back toward it, with short fades. Volume only; edit them under Clip gain. Turn off for music." : "Quick Level applies one gain change to the whole file.").hint()
                 }
                 section {
@@ -656,7 +664,9 @@ struct ContentView: View {
                 }
                 section {
                     Text("Output").sectionTitle()
-                    folderRow(model.quickFolder, empty: "Choose output folder") { model.chooseQuickFolder() }
+                    folderRow(model.quickFolder, empty: "Desktop › CueLevel › Levelled") { model.chooseQuickFolder() }
+                    if model.quickFolder != nil { Button("Use Desktop › CueLevel") { model.useDefaultOutputFolder() }.buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.teal) }
+                    Text("Files are named “<original>_LVL\(String(format: "%.0f", model.settings.target)).wav/.mov”. Reports go to a Reports folder next to them.").hint()
                     Menu {
                         ForEach(OutputFormat.allCases) { format in Button(format.rawValue) { model.settings.format = format } }
                     } label: { HStack { Text("File type").foregroundStyle(Theme.text); Spacer(); Text(model.settings.format.rawValue).foregroundStyle(Theme.bone) } }
@@ -1059,10 +1069,85 @@ struct LogoMark: View {
                     Button("Check for Updates…") { Task { await updater.check(userInitiated: true) } }.disabled(!updater.canCheck)
                 }
                 CommandGroup(after: .newItem) { Button("Add Files…") { model.addFiles() }.keyboardShortcut("o") }
+                CommandGroup(replacing: .help) { Button("Keyboard Shortcuts") { model.showShortcuts = true }.keyboardShortcut("/", modifiers: .command) }
                 CommandGroup(replacing: .undoRedo) {
                     Button("Undo") { if model.clipEditing { model.undoRegions() } else { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) } }.keyboardShortcut("z")
                     Button("Redo") { if model.clipEditing { model.redoRegions() } else { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) } }.keyboardShortcut("z", modifiers: [.command, .shift])
                 }
             }
+    }
+}
+
+
+/// Live loudness while playing: momentary and short-term LUFS (bar with target mark) and sample peak.
+struct LoudnessMeterBar: View {
+    let reading: (momentary: Double?, shortTerm: Double?, peak: Double?)
+    let target: Double
+    let ready: Bool
+    var body: some View {
+        HStack(spacing: 12) {
+            GeometryReader { geometry in
+                let w = geometry.size.width
+                func x(_ v: Double) -> CGFloat { CGFloat((min(0, max(-40, v)) + 40) / 40) * w }
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 3).fill(Theme.field)
+                    if let m = reading.momentary {
+                        RoundedRectangle(cornerRadius: 3).fill(LinearGradient(colors: [Theme.teal, Theme.lime, Theme.amber], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(2, x(m)))
+                    }
+                    if let s = reading.shortTerm { Rectangle().fill(Theme.bone).frame(width: 2).offset(x: x(s) - 1) }
+                    Rectangle().fill(Theme.coral).frame(width: 1.5).offset(x: x(target))
+                }
+            }.frame(height: 8)
+            meterValue("M", reading.momentary, "LUFS")
+            meterValue("S", reading.shortTerm, "LUFS")
+            meterValue("Peak", reading.peak, "dBFS", warn: (reading.peak ?? -100) > -1)
+        }
+        .font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+        .opacity(ready ? 1 : 0.4)
+        .help("Live loudness of what's playing: M = momentary (0.4 s), S = short-term (3 s), red mark = target. Peak is the sample peak.")
+    }
+    func meterValue(_ label: String, _ value: Double?, _ unit: String, warn: Bool = false) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+            Text(value.map { lufs($0) } ?? "—").font(.system(size: 12, weight: .semibold)).monospacedDigit().foregroundStyle(warn ? Theme.coral : Theme.bone).frame(minWidth: 38, alignment: .trailing)
+            Text(unit)
+        }
+    }
+}
+
+/// Keyboard shortcuts, laid out like a cheat sheet for training.
+struct ShortcutSheet: View {
+    let close: () -> Void
+    let groups: [(String, [(String, String)])] = [
+        ("Playback", [("Space", "Play / pause"), ("P", "Play section or in–out range with pre/post-roll"), ("L", "Loop on / off")]),
+        ("Clip gain editor", [("Drag across", "Mark a section"), ("Drag up / down", "Change a section's level"), ("↑ / ↓", "Nudge 0.5 dB"), ("⇧↑ / ⇧↓", "Nudge 3 dB"), ("M", "Mute the selected section"), ("Return", "Add a marker at the playhead")]),
+        ("Cue edges", [("I", "Set in point at the playhead"), ("O", "Set out point at the playhead"), ("Drag IN / OUT", "Move the in or out point on the ruler")]),
+        ("View", [("T / R", "Zoom in / out"), ("⌥-scroll or pinch", "Zoom around the pointer"), ("Scroll", "Move along the cue when zoomed")]),
+        ("Edit", [("⌘Z / ⇧⌘Z", "Undo / redo"), ("⌘O", "Add files"), ("⌘/", "This list")]),
+    ]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack { Text("Keyboard shortcuts").font(.system(size: 18, weight: .semibold)); Spacer(); Button("Done", action: close).buttonStyle(CLButton(kind: .primary)).keyboardShortcut(.defaultAction) }
+            HStack(alignment: .top, spacing: 28) {
+                ForEach(0..<2, id: \.self) { column in
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(groups.enumerated()).filter { $0.offset % 2 == column }.map(\.element), id: \.0) { group in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(group.0.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.muted)
+                                ForEach(group.1, id: \.0) { item in
+                                    HStack(spacing: 10) {
+                                        Text(item.0).font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundStyle(Theme.bone)
+                                            .padding(.horizontal, 7).padding(.vertical, 3).background(RoundedRectangle(cornerRadius: 5).fill(Theme.raised)).overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.line))
+                                        Text(item.1).font(.system(size: 12.5)).foregroundStyle(Theme.text)
+                                    }
+                                }
+                            }
+                        }
+                    }.frame(width: 300, alignment: .leading)
+                }
+            }
+            Text("Single-key shortcuts work while the clip gain editor is open and you aren't typing in a field.").hint()
+        }.padding(26).background(Theme.panel).preferredColorScheme(.dark)
     }
 }

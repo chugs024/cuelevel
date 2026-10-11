@@ -429,6 +429,40 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let a2 = try AudioEngine.sectionLoudness(evenRender.url, info: evenInfo, start: 4.8, end: 7.2, regions: [], token: Cancellation())
         check(Swift.abs(a1 - a2) <= 1.0, "output is even: \(a1) vs \(a2)")
         print("PASS: even out finds loud/quiet stretches and the render comes out even")
+
+        // 28. 1.5 edits: in/out trim, edge fades, mute, naming, report columns.
+        check(Workspace.levelledName(for: URL(fileURLWithPath: "/x/Cue 24B_Sayukta 2.wav"), target: -18, ext: "wav") == "Cue 24B_Sayukta 2_LVL-18.wav", "naming convention")
+        check(Workspace.levelledName(for: URL(fileURLWithPath: "/x/a.mp4"), target: -23.5, ext: "mov") == "a_LVL-23.5.mov", "naming with decimals")
+        var trimEdit = CueEdit(); trimEdit.inPoint = 1; trimEdit.outPoint = 5; trimEdit.fadeIn = 0.2; trimEdit.fadeOut = 0.5; trimEdit.fadeShape = .sCurve
+        let trimFilters = trimEdit.filters(duration: 8, sampleRate: 48000, canCut: true)
+        check(trimFilters.first == "atrim=start_sample=48000:end_sample=240000,asetpts=PTS-STARTPTS" && trimFilters.contains("afade=t=in:ss=0:ns=9600:curve=esin") && trimFilters.contains("afade=t=out:ss=168000:ns=24000:curve=esin"), "trim filters: \(trimFilters)")
+        let videoFilters = trimEdit.filters(duration: 8, sampleRate: 48000, canCut: false)
+        check(!videoFilters.joined().contains("atrim") && videoFilters.contains("afade=t=in:ss=48000:ns=9600:curve=esin"), "video keeps length: \(videoFilters)")
+        check(CueEdit().filters(duration: 8, sampleRate: 48000, canCut: true).isEmpty, "no edits, no filters")
+        var cutOnly = CueEdit(); cutOnly.inPoint = 2
+        check(cutOnly.filters(duration: 8, sampleRate: 48000, canCut: true).contains { $0.hasPrefix("afade=t=in:ss=0:ns=240") }, "a cut always gets a click guard")
+        let toSound = CueEdit.trimmedToSound(StereoStats(correlation: 1, headSilence: 2.5, tailSilence: 3), duration: 10, keeping: CueEdit())
+        check(near(toSound.inPoint, 2.4) && near(toSound.outPoint ?? 0, 7.1), "trim to sound leaves a 0.1 s handle: \(toSound)")
+        var mutedRegion = GainRegion(start: 1, end: 2, gain: 0, fadeIn: 0.01, fadeOut: 0.01); mutedRegion.muted = true
+        check(ClipGain.active([mutedRegion]).count == 1 && ClipGain.multiplier(at: 1.5, regions: [mutedRegion]) == 0, "mute silences")
+        let stacked = [GainRegion(start: 0, end: 4, gain: -6.0206, fadeIn: 0.01, fadeOut: 0.01), GainRegion(start: 1, end: 3, gain: -6.0206, fadeIn: 0.01, fadeOut: 0.01)]
+        check(near(ClipGain.multiplier(at: 2, regions: stacked), 0.25, 0.001), "overlapping sections multiply")
+        check(near(ClipGain.envelope(at: 0.5, regions: nil, edit: trimEdit, duration: 8), 0) && near(ClipGain.envelope(at: 3, regions: nil, edit: trimEdit, duration: 8), 1), "edge envelope")
+        // Real render: trimmed audio is exactly the in–out length; a muted section is silent.
+        var editSettings = lossless; editSettings.edit = trimEdit; editSettings.clipGain = [GainRegion(start: 3, end: 4, gain: 0, fadeIn: 0.02, fadeOut: 0.02, muted: true)]
+        let editRender = try AudioEngine.process(speechLike, analysis: sectionsAnalysis, settings: editSettings, directory: area.appendingPathComponent("render-edit"), token: Cancellation()) { _, _ in }
+        let editInfo = try AudioEngine.inspect(editRender.url, token: Cancellation())
+        check(Swift.abs(editInfo.duration - 4) < 0.01, "trimmed to 4 s: \(editInfo.duration)")
+        let mutedLoudness = (try? AudioEngine.sectionLoudness(editRender.url, info: editInfo, start: 2.1, end: 2.9, regions: [], token: Cancellation())) ?? -120
+        check(mutedLoudness < -60, "muted section is silent: \(mutedLoudness)")
+        var reportJob2 = CueJob(source: speechLike); reportJob2.analysis = sectionsAnalysis; reportJob2.output = editRender; reportJob2.edit = trimEdit
+        reportJob2.edit?.markers = [CueMarker(time: 2, name: "Speaker 2")]; reportJob2.clipGain = editSettings.clipGain
+        let reportRows2 = Workspace.showReportRows([reportJob2])
+        check(reportRows2[0].suffix(2) == ["Edits", "Markers"] && reportRows2[1].last == "Speaker 2 @ 00:02" && reportRows2[1][reportRows2[1].count - 2].contains("1 muted") && reportRows2[1][reportRows2[1].count - 2].contains("trimmed"), "report edits and markers: \(reportRows2[1].suffix(2))")
+        // Older sessions without edit fields still load.
+        let legacyEdit = try JSONDecoder().decode(CueEdit.self, from: Data(#"{"inPoint":1}"#.utf8))
+        check(legacyEdit.inPoint == 1 && legacyEdit.fadeShape == .smooth && legacyEdit.markers.isEmpty, "edit decodes with missing fields")
+        print("PASS: trim, fades, mute, naming, report and decoding")
         print("ALL 1.1 TESTS PASSED")
     }
 }

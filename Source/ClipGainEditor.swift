@@ -16,6 +16,8 @@ struct ClipGainEditor: View {
     let job: CueJob
     let analysis: Analysis
     @State private var faderDraft: Double?
+    /// While typing in a field, single-key shortcuts (M, I, O, arrows…) are switched off so they don't steal keystrokes.
+    @FocusState private var focusedField: String?
 
     var body: some View {
         let regions = job.clipGain ?? []
@@ -30,7 +32,8 @@ struct ClipGainEditor: View {
                              faderOverride: region.flatMap { r in faderDraft.map { var c = r; c.gain = $0; return c } },
                              onSeek: model.seek, onCreate: { model.addRegion(start: $0, end: $1) },
                              onChange: { model.updateRegion($0) }, onSelect: { model.selectedRegion = $0 },
-                             onZoom: { factor, anchor in model.zoom(by: factor, around: anchor) }, onPan: { model.pan(by: $0) })
+                             onZoom: { factor, anchor in model.zoom(by: factor, around: anchor) }, onPan: { model.pan(by: $0) },
+                             edit: job.edit ?? CueEdit(), onEdit: { model.setEdit($0) })
                 GainFader(value: region?.gain, draft: $faderDraft) { value in
                     if var r = region { r.gain = value; model.updateRegion(r) }
                 }
@@ -57,7 +60,17 @@ struct ClipGainEditor: View {
             Divider().frame(height: 14)
             Button { model.evenOutSelected() } label: { Label("Even out", systemImage: "wand.and.rays") }.buttonStyle(CLButton(kind: .ghost)).disabled(model.measuringSection)
                 .help("Find stretches more than 2 dB louder or quieter than the rest and turn them back. Hand-drawn sections are kept.")
+            Divider().frame(height: 14)
+            Button { model.toggleMuteSelected() } label: { Label("Mute", systemImage: region?.muted == true ? "speaker.slash.fill" : "speaker.slash") }
+                .buttonStyle(CLButton(kind: .ghost)).disabled(region == nil).help("Silence the selected section, with short fades (M)")
+            Button { model.addMarker() } label: { Label("Marker", systemImage: "flag") }.buttonStyle(CLButton(kind: .ghost)).help("Add a marker at the playhead (Return)")
             Spacer()
+            Button { model.looping.toggle() } label: { Image(systemName: "repeat") }.buttonStyle(CLButton(kind: model.looping ? .primary : .ghost)).help("Loop the section or in–out range (L)")
+            Menu {
+                ForEach([0.0, 0.5, 1.0, 2.0, 3.0], id: \.self) { v in Button(v == 0 ? "No pre/post-roll" : String(format: "%g s pre/post-roll", v)) { model.preRoll = v } }
+            } label: { Text(model.preRoll == 0 ? "No roll" : String(format: "%g s roll", model.preRoll)) }.menuStyle(.borderlessButton).fixedSize().help("Time played before and after a section")
+            Button { model.playRange() } label: { Image(systemName: "play.square") }.buttonStyle(CLButton(kind: .ghost)).help("Play the section (or in–out range) with pre/post-roll")
+            Button { model.showShortcuts = true } label: { Image(systemName: "questionmark.circle") }.buttonStyle(CLButton(kind: .ghost)).help("Keyboard shortcuts")
             Text("\(preciseClock(view.start)) – \(preciseClock(view.start + view.length))").monospacedDigit().foregroundStyle(Theme.muted)
             if model.detailWaveform.isEmpty { ProgressView().controlSize(.small).help("Loading the detailed waveform for zooming") }
         }.font(.system(size: 11.5))
@@ -94,6 +107,7 @@ struct ClipGainEditor: View {
                     Button("Clear all") { model.clearRegions() }.buttonStyle(.plain).foregroundStyle(Theme.muted)
                 }
             } else {
+                cueEdgesBar()
                 HStack {
                     Text(regions.isEmpty
                          ? "Drag across the waveform to mark a section, then drag inside it up or down, or use the fader. Option-scroll or pinch to zoom."
@@ -115,9 +129,46 @@ struct ClipGainEditor: View {
             }
         }.font(.system(size: 12))
     }
+    /// In/out points and edge fades for the whole cue, plus markers.
+    @ViewBuilder func cueEdgesBar() -> some View {
+        let edit = (job.edit ?? CueEdit()).normalized(duration: analysis.info.duration)
+        HStack(spacing: 8) {
+            Text("Cue").font(.system(size: 12, weight: .semibold))
+            Button { model.setInPoint() } label: { Text("In \(preciseClock(edit.inPoint))").monospacedDigit() }.buttonStyle(CLButton(kind: .ghost)).help("Set the in point at the playhead (I)")
+            Button { model.setOutPoint() } label: { Text("Out \(preciseClock(edit.end(duration: analysis.info.duration)))").monospacedDigit() }.buttonStyle(CLButton(kind: .ghost)).help("Set the out point at the playhead (O)")
+            Button("Trim silence") { model.trimToSound() }.buttonStyle(CLButton(kind: .ghost)).help("Move in and out to just before the first sound and just after the last")
+            if edit.isTrimmed(duration: analysis.info.duration) { Button("Clear") { model.clearTrim() }.buttonStyle(.plain).foregroundStyle(Theme.muted) }
+            Spacer()
+        }
+        HStack(spacing: 8) {
+            numberField("Cue fade in", value: edit.fadeIn * 1000, unit: "ms in", width: 50, decimals: 0) { var e = edit; e.fadeIn = $0 / 1000; model.setEdit(e) }
+            numberField("Cue fade out", value: edit.fadeOut * 1000, unit: "ms out", width: 50, decimals: 0) { var e = edit; e.fadeOut = $0 / 1000; model.setEdit(e) }
+            Picker("", selection: Binding(get: { edit.fadeShape }, set: { var e = edit; e.fadeShape = $0; model.setEdit(e) })) {
+                ForEach(FadeShape.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.labelsHidden().frame(width: 96).help("Fade curve")
+            Button("Apply fades to all cues") { model.applyFadesToAllCues() }.buttonStyle(CLButton(kind: .ghost))
+            Spacer()
+        }
+        if !edit.markers.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(edit.markers) { marker in
+                        HStack(spacing: 4) {
+                            Button { model.seek(marker.time) } label: { Image(systemName: "flag.fill").foregroundStyle(Theme.lime) }.buttonStyle(.plain).help("Jump to \(preciseClock(marker.time))")
+                            TextField("Name", text: Binding(get: { marker.name }, set: { model.renameMarker(marker.id, to: $0) })).textFieldStyle(.plain).frame(width: 90)
+                                .focused($focusedField, equals: marker.id.uuidString).onSubmit { focusedField = nil }
+                            Text(preciseClock(marker.time)).monospacedDigit().foregroundStyle(Theme.muted)
+                            Button { model.deleteMarker(marker.id) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }.buttonStyle(.plain).foregroundStyle(Theme.muted)
+                        }.padding(.horizontal, 8).padding(.vertical, 4).background(RoundedRectangle(cornerRadius: 6).fill(Theme.field))
+                    }
+                }
+            }
+        }
+    }
     func numberField(_ title: String, value: Double, unit: String, width: CGFloat, decimals: Int = 1, set: @escaping (Double) -> Void) -> some View {
         HStack(spacing: 4) {
             TextField(title, value: Binding(get: { value }, set: set), format: .number.precision(.fractionLength(decimals)))
+                .focused($focusedField, equals: title)
                 .textFieldStyle(.plain).multilineTextAlignment(.trailing).frame(width: width).monospacedDigit()
                 .padding(.horizontal, 6).padding(.vertical, 3).background(RoundedRectangle(cornerRadius: 6).fill(Theme.field)).overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.line))
             Text(unit).foregroundStyle(Theme.muted)
@@ -133,7 +184,13 @@ struct ClipGainEditor: View {
             Button("") { model.nudgeSelectedRegion(by: -3) }.keyboardShortcut(.downArrow, modifiers: .shift)
             Button("") { model.zoom(by: 2) }.keyboardShortcut("t", modifiers: [])
             Button("") { model.zoom(by: 0.5) }.keyboardShortcut("r", modifiers: [])
-        }.opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+            Button("") { model.toggleMuteSelected() }.keyboardShortcut("m", modifiers: [])
+            Button("") { model.looping.toggle() }.keyboardShortcut("l", modifiers: [])
+            Button("") { model.setInPoint() }.keyboardShortcut("i", modifiers: [])
+            Button("") { model.setOutPoint() }.keyboardShortcut("o", modifiers: [])
+            Button("") { model.addMarker() }.keyboardShortcut(.return, modifiers: [])
+            Button("") { model.playRange() }.keyboardShortcut("p", modifiers: [])
+        }.opacity(0).frame(width: 0, height: 0).accessibilityHidden(true).disabled(focusedField != nil)
     }
 }
 
@@ -161,8 +218,11 @@ struct ClipGainLane: View {
     let onSelect: (UUID?) -> Void
     let onZoom: (Double, Double) -> Void
     let onPan: (Double) -> Void
+    let edit: CueEdit
+    let onEdit: (CueEdit) -> Void
 
-    enum Handle { case gain, fadeIn, fadeOut, left, right, empty }
+    enum Handle { case gain, fadeIn, fadeOut, left, right, empty, inFlag, outFlag, scrub }
+    @State private var editDraft: CueEdit?
     @State private var handle: Handle?
     @State private var original: GainRegion?
     @State private var draft: GainRegion?
@@ -220,7 +280,12 @@ struct ClipGainLane: View {
     }
 
     private func hit(_ p: CGPoint, _ size: CGSize) -> (Handle, GainRegion?) {
-        guard p.y > rulerHeight else { return (.empty, nil) }
+        if p.y <= rulerHeight {
+            let e = edit.normalized(duration: duration)
+            if abs(p.x - x(e.inPoint, size.width)) < 7 { return (.inFlag, nil) }
+            if abs(p.x - x(e.end(duration: duration), size.width)) < 7 { return (.outFlag, nil) }
+            return (.scrub, nil)
+        }
         let ordered = shown.filter { $0.id == selected } + shown.filter { $0.id != selected }
         for r in ordered {
             let x0 = x(r.start, size.width), x1 = x(r.end, size.width)
@@ -237,14 +302,23 @@ struct ClipGainLane: View {
     private func cursor(for handle: Handle) -> NSCursor {
         switch handle {
         case .gain: return .resizeUpDown
-        case .fadeIn, .fadeOut, .left, .right: return .resizeLeftRight
+        case .fadeIn, .fadeOut, .left, .right, .inFlag, .outFlag: return .resizeLeftRight
+        case .scrub: return .pointingHand
         case .empty: return .iBeam
         }
     }
 
     // MARK: Dragging
     private func dragChanged(_ value: DragGesture.Value, _ size: CGSize) {
-        if value.startLocation.y <= rulerHeight { onSeek(t(value.location.x, size.width)); return }   // scrub on the ruler
+        if handle == nil, value.startLocation.y <= rulerHeight {
+            handle = hit(value.startLocation, size).0; editDraft = edit.normalized(duration: duration)
+        }
+        switch handle {
+        case .scrub?: onSeek(t(value.location.x, size.width)); return
+        case .inFlag?: var e = editDraft ?? edit; e.inPoint = t(value.location.x, size.width); editDraft = e.normalized(duration: duration); return
+        case .outFlag?: var e = editDraft ?? edit; e.outPoint = t(value.location.x, size.width); editDraft = e.normalized(duration: duration); return
+        default: break
+        }
         if handle == nil {
             let (h, r) = hit(value.startLocation, size)
             handle = h; original = r; draft = r
@@ -255,7 +329,7 @@ struct ClipGainLane: View {
         let now = t(value.location.x, size.width)
         guard var r = original else { if h == .empty { newRange = (t(value.startLocation.x, size.width), now) }; return }
         switch h {
-        case .empty: return
+        case .empty, .inFlag, .outFlag, .scrub: return
         case .gain:
             // Up is louder. 0.25 dB per point; hold Shift for fine 0.05 dB steps.
             let step = NSEvent.modifierFlags.contains(.shift) ? 0.05 : 0.25
@@ -268,8 +342,9 @@ struct ClipGainLane: View {
         draft = r.normalized(duration: duration)
     }
     private func dragEnded(_ value: DragGesture.Value, _ size: CGSize) {
-        defer { handle = nil; original = nil; draft = nil; newRange = nil }
-        if value.startLocation.y <= rulerHeight { return }
+        defer { handle = nil; original = nil; draft = nil; newRange = nil; editDraft = nil }
+        if handle == .inFlag || handle == .outFlag { if let editDraft, editDraft != edit.normalized(duration: duration) { onEdit(editDraft) }; return }
+        if handle == .scrub { return }
         let moved = hypot(value.translation.width, value.translation.height) > 3
         switch handle {
         case .empty?:
@@ -298,7 +373,7 @@ struct ClipGainLane: View {
         // Sections behind the waveform.
         for r in list where r.end > viewStart && r.start < viewStart + length {
             let rect = CGRect(x: x(r.start, w), y: top, width: max(2, x(r.end, w) - x(r.start, w)), height: h - top)
-            let isSelected = r.id == selected, tint = r.isReference ? Theme.lime : Theme.teal
+            let isSelected = r.id == selected, tint = r.muted == true ? Theme.coral : (r.isReference ? Theme.lime : Theme.teal)
             context.fill(Path(rect), with: .color(tint.opacity(isSelected ? 0.12 : 0.05)))
             var edges = Path(); edges.move(to: CGPoint(x: rect.minX, y: top)); edges.addLine(to: CGPoint(x: rect.minX, y: h))
             edges.move(to: CGPoint(x: rect.maxX, y: top)); edges.addLine(to: CGPoint(x: rect.maxX, y: h))
@@ -344,7 +419,7 @@ struct ClipGainLane: View {
                 context.stroke(guide, with: .color(Theme.amber.opacity(0.25)), style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
             }
             let centre = max(a + 30, min(b - 30, (max(fi, 0) + min(fo, w)) / 2))
-            let value = (r.isReference ? "★ " : (r.isAuto == true ? "auto " : "")) + signed(r.gain) + " dB"
+            let value = r.muted == true ? "MUTED" : (r.isReference ? "★ " : (r.isAuto == true ? "auto " : "")) + signed(r.gain) + " dB"
             let pill = CGRect(x: centre - (r.isAuto == true ? 42 : 32), y: y - 9, width: r.isAuto == true ? 84 : 64, height: 18)
             context.fill(Path(roundedRect: pill, cornerRadius: 5), with: .color(isSelected ? Theme.bone : Theme.raised))
             context.stroke(Path(roundedRect: pill, cornerRadius: 5), with: .color(r.isReference ? Theme.lime : Theme.bone.opacity(0.5)), lineWidth: 1)
@@ -359,6 +434,12 @@ struct ClipGainLane: View {
             context.draw(Text(signed(d.gain) + " dB").font(.system(size: 19, weight: .bold)).monospacedDigit().foregroundColor(Theme.base), at: CGPoint(x: cx, y: bubble.midY))
         }
 
+        // Outside the in/out points: shaded (removed from audio files, silenced in video).
+        let e = (editDraft ?? edit).normalized(duration: duration)
+        let inX = x(e.inPoint, w), outX = x(e.end(duration: duration), w)
+        if inX > 0 { context.fill(Path(CGRect(x: 0, y: top, width: min(w, inX), height: h - top)), with: .color(Theme.base.opacity(0.72))) }
+        if outX < w { context.fill(Path(CGRect(x: max(0, outX), y: top, width: w - max(0, outX), height: h - top)), with: .color(Theme.base.opacity(0.72))) }
+
         // Ruler.
         context.fill(Path(CGRect(x: 0, y: 0, width: w, height: top)), with: .color(Theme.panel))
         let step = Self.tickStep(for: length, width: w)
@@ -372,6 +453,22 @@ struct ClipGainLane: View {
         }
         var rule = Path(); rule.move(to: CGPoint(x: 0, y: top)); rule.addLine(to: CGPoint(x: w, y: top))
         context.stroke(rule, with: .color(Theme.line), lineWidth: 1)
+
+        // In/out flags and markers on the ruler.
+        for (fx, label) in [(inX, "IN"), (outX, "OUT")] where fx >= -1 && fx <= w + 1 {
+            var flag = Path(); flag.move(to: CGPoint(x: fx, y: 0)); flag.addLine(to: CGPoint(x: fx, y: h))
+            context.stroke(flag, with: .color(Theme.coral.opacity(0.8)), lineWidth: 1.2)
+            let tag = CGRect(x: label == "IN" ? fx : fx - 26, y: 2, width: 26, height: 14)
+            context.fill(Path(roundedRect: tag, cornerRadius: 3), with: .color(Theme.coral))
+            context.draw(Text(label).font(.system(size: 8.5, weight: .heavy)).foregroundColor(Theme.base), at: CGPoint(x: tag.midX, y: tag.midY))
+        }
+        for marker in e.markers {
+            let mx = x(marker.time, w)
+            guard mx >= 0, mx <= w else { continue }
+            var line = Path(); line.move(to: CGPoint(x: mx, y: top)); line.addLine(to: CGPoint(x: mx, y: h))
+            context.stroke(line, with: .color(Theme.lime.opacity(0.45)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            context.draw(Text("⚑ " + marker.name).font(.system(size: 9.5, weight: .semibold)).foregroundColor(Theme.lime), at: CGPoint(x: mx + 3, y: top + 10), anchor: .leading)
+        }
 
         let px = x(position, w)
         if px >= 0 && px <= w {

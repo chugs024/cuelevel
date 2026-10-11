@@ -19,13 +19,15 @@ struct GainRegion: Codable, Equatable, Hashable, Identifiable, Sendable {
     var isReference = false
     /// Made by Even out (replaced when Even out runs again); nil or false for sections drawn by hand.
     var isAuto: Bool? = nil
+    /// Silenced section (1.5): a mute with short fades, like muting a clip in Pro Tools.
+    var muted: Bool? = nil
 
     static let gainRange = -24.0 ... 24.0
     static let minimumLength = 0.1
     static let minimumFade = 0.005
 
     var length: Double { end - start }
-    var linearGain: Double { pow(10, gain / 20) }
+    var linearGain: Double { muted == true ? 0 : pow(10, gain / 20) }
 
     /// Keeps the region inside the cue, at least `minimumLength` long, with fades that fit and gain in range.
     func normalized(duration: Double) -> GainRegion {
@@ -50,13 +52,14 @@ struct GainRegion: Codable, Equatable, Hashable, Identifiable, Sendable {
 enum ClipGain {
     /// Regions that change the sound (non-zero gain), sorted, with overlaps resolved in favour of the later-starting region.
     static func active(_ regions: [GainRegion]?) -> [GainRegion] {
-        (regions ?? []).filter { abs($0.gain) >= 0.05 && $0.length > 0 }.sorted { $0.start < $1.start }
+        (regions ?? []).filter { (abs($0.gain) >= 0.05 || $0.muted == true) && $0.length > 0 }.sorted { $0.start < $1.start }
     }
 
-    /// Linear multiplier at time t: 1 plus each region's change weighted by its fades.
+    /// Linear multiplier at time t: each region's change, weighted by its fades, multiplied together (so overlapping
+    /// sections combine like stacked gain stages).
     static func multiplier(at t: Double, regions: [GainRegion]) -> Double {
         var m = 1.0
-        for r in regions { let w = r.weight(at: t); if w > 0 { m += (r.linearGain - 1) * w } }
+        for r in regions { let w = r.weight(at: t); if w > 0 { m *= 1 + (r.linearGain - 1) * w } }
         return max(0, m)
     }
 
@@ -67,9 +70,9 @@ enum ClipGain {
         guard !list.isEmpty else { return nil }
         func n(_ v: Double) -> String { String(format: "%.6f", v) }
         let terms = list.map { r in
-            "(\(n(r.linearGain - 1)))*clip((T-\(n(r.start)))/\(n(r.fadeIn)),0,1)*clip((\(n(r.end))-T)/\(n(r.fadeOut)),0,1)"
+            "(1+(\(n(r.linearGain - 1)))*clip((T-\(n(r.start)))/\(n(r.fadeIn)),0,1)*clip((\(n(r.end))-T)/\(n(r.fadeOut)),0,1))"
         }
-        let expression = "val(ch)*max(0,1+" + terms.joined(separator: "+") + ")"
+        let expression = "val(ch)*max(0," + terms.joined(separator: "*") + ")"
         // aeval has no named time-from-sample constant; substitute n/s for T.
         return "aeval=exprs='" + expression.replacingOccurrences(of: "T", with: "(n/s)") + "':c=same"
     }
@@ -89,87 +92,28 @@ enum ClipGain {
 extension ClipGain {
     /// Real-time preview through AVAudioMix, whose volume cannot exceed 1: everything is scaled down by the largest boost
     /// so the balance between sections is exact while boosted sections still fit. Returns that overall scale (0–1].
-    static func previewScale(_ regions: [GainRegion]?) -> Double {
-        1 / max(1, active(regions).map(\.linearGain).max() ?? 1)
+    static func previewScale(_ regions: [GainRegion]?, edit: CueEdit? = nil, duration: Double = 0) -> Double {
+        let peak = breakpoints(regions, edit: edit, duration: duration).map { multiplier(at: $0, regions: active(regions)) }.max() ?? 1
+        return 1 / max(1, peak)
     }
     /// Volume breakpoints for the preview: (time, volume) pairs; volume changes linearly between consecutive points.
-    static func previewPoints(_ regions: [GainRegion]?) -> [(time: Double, volume: Double)] {
-        let scale = previewScale(regions)
-        var points: [(time: Double, volume: Double)] = [(0, scale)]
-        for r in active(regions) {
-            let g = r.linearGain * scale
-            points += [(r.start, scale), (r.start + r.fadeIn, g), (r.end - r.fadeOut, g), (r.end, scale)]
+    static func previewPoints(_ regions: [GainRegion]?, edit: CueEdit? = nil, duration: Double = 0) -> [(time: Double, volume: Double)] {
+        let scale = previewScale(regions, edit: edit, duration: duration)
+        return breakpoints(regions, edit: edit, duration: duration).map { t in
+            (t, envelope(at: t, regions: regions, edit: edit, duration: duration) * scale)
         }
-        return points
     }
-}
-
-extension ClipGain {
-    /// Even out keeps each stretch within this many dB of the cue's typical level.
-    static let evenOutTolerance = 2.0
-    static let evenOutMaxCut = 18.0
-    static let evenOutMaxBoost = 9.0
-
-    /// Finds stretches whose loudness sits clearly above or below the cue's typical level and returns sections that bring
-    /// them back. `momentary` holds 400 ms loudness readings every 100 ms. Pauses are ignored when judging a stretch, and
-    /// fades sit in the quiet around it. Sections never overlap `avoiding` (sections drawn by hand).
-    static func evenOut(momentary m: [Double], duration: Double, tolerance: Double = evenOutTolerance, avoiding: [GainRegion] = []) -> [GainRegion] {
-        let step = 0.1
-        guard m.count > 20 else { return [] }
-        func energy(_ v: Double) -> Double { pow(10, v / 10) }
-        func level(_ e: Double) -> Double { 10 * log10(max(e, 1e-12)) }
-        func median(_ values: [Double]) -> Double? { let s = values.sorted(); return s.isEmpty ? nil : s[s.count / 2] }
-        // Gate out silence, then pauses relative to the typical level.
-        guard let rough = median(m.filter { $0 > -50 }) else { return [] }
-        let active = m.map { $0 > -50 && $0 > rough - 15 }
-        guard let reference = median(zip(m, active).filter { $0.1 }.map { $0.0 }) else { return [] }
-        // Phrase loudness: energy mean of active readings within ±0.75 s.
-        let radius = 7
-        var phrase = [Double?](repeating: nil, count: m.count)
-        for i in m.indices where active[i] {
-            var sum = 0.0, n = 0
-            for j in max(0, i - radius)...min(m.count - 1, i + radius) where active[j] { sum += energy(m[j]); n += 1 }
-            phrase[i] = n > 0 ? level(sum / Double(n)) : nil
+    static func breakpoints(_ regions: [GainRegion]?, edit: CueEdit?, duration: Double) -> [Double] {
+        var times: Set<Double> = [0]
+        for r in active(regions) { times.formUnion([r.start, r.start + r.fadeIn, r.end - r.fadeOut, r.end]) }
+        if let edit, duration > 0, edit.changesAudio(duration: duration) {
+            let e = edit.normalized(duration: duration), s = e.inPoint, end = e.end(duration: duration)
+            let fi = max(e.fadeIn, s > 0.0005 ? CueEdit.clickGuard : 0), fo = max(e.fadeOut, end < duration - 0.0005 ? CueEdit.clickGuard : 0)
+            times.formUnion([max(0, s - 0.0001), s, s + fi, end - fo, end, min(duration, end + 0.0001)])
+            // Curved fades are previewed as a few straight segments.
+            for k in 1..<4 { times.insert(s + fi * Double(k) / 4); times.insert(end - fo * Double(k) / 4) }
         }
-        // Runs of the same direction beyond the tolerance; pauses shorter than 0.8 s don't end a run.
-        struct Run { var sign: Int; var first: Int; var last: Int; var activeFrames: [Int] }
-        var runs: [Run] = []
-        var current: Run?
-        var gap = 0
-        func close() { if let r = current, Double(r.activeFrames.count) * step >= 1.0 { runs.append(r) }; current = nil; gap = 0 }
-        for i in m.indices {
-            guard active[i], let p = phrase[i] else {
-                if current != nil { gap += 1; if Double(gap) * step > 0.8 { close() } }
-                continue
-            }
-            let d = p - reference
-            let sign = d > tolerance ? 1 : (d < -tolerance ? -1 : 0)
-            if sign == 0 { close(); continue }
-            if var r = current, r.sign == sign { r.last = i; r.activeFrames.append(i); current = r; gap = 0 }
-            else { close(); current = Run(sign: sign, first: i, last: i, activeFrames: [i]) }
-        }
-        close()
-        // One section per run: the gain that brings the run's loudness to the reference, with fades in the surrounding quiet.
-        var result: [GainRegion] = []
-        for r in runs {
-            // Trim to readings that themselves sit beyond the tolerance (the smoothing spreads a stretch's edges).
-            let core = r.activeFrames.filter { Double(r.sign) * (m[$0] - reference) > tolerance }
-            guard let first = core.first, let last = core.last, let loudness = median(core.map { m[$0] }) else { continue }
-            var gain = ((reference - loudness) * 2).rounded() / 2
-            gain = min(evenOutMaxBoost, max(-evenOutMaxCut, gain))
-            guard abs(gain) >= tolerance * 0.75 else { continue }
-            // Readings mark the end of a 400 ms window: the stretch starts about one reading before the first and ends
-            // about 0.35 s before the last. Fades sit just outside it.
-            let start = max(0, Double(first) * step - 0.15), end = min(duration, Double(last + 1) * step - 0.15)
-            var region = GainRegion(start: start, end: end, gain: gain, fadeIn: 0.15, fadeOut: 0.2)
-            region.isAuto = true
-            region = region.normalized(duration: duration)
-            // Back-to-back stretches: start this one where the previous one ends.
-            if let previous = result.last, previous.end > region.start { region.start = previous.end; region = region.normalized(duration: duration) }
-            guard region.length >= 0.5 else { continue }
-            if !avoiding.contains(where: { $0.start < region.end && region.start < $0.end }) { result.append(region) }
-        }
-        return result
+        return times.filter { $0 >= 0 }.sorted()
     }
 }
 

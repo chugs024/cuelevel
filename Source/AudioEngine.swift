@@ -108,6 +108,8 @@ struct ProcessingSettings: Codable, Equatable, Sendable {
     var peakLimit: Double? = nil
     /// Per-cue clip gain (1.2), applied before everything else. Set from the cue when it is processed; nil for batch settings.
     var clipGain: [GainRegion]? = nil
+    /// Per-cue in/out points, edge fades and markers (1.5). Set from the cue when it is processed.
+    var edit: CueEdit? = nil
     mutating func setMode(_ newMode: ContentMode) {
         mode = newMode
         var leveling = LevelerSettings(); leveling.apply(newMode == .music ? .gentle : newMode == .voice ? .strong : .balanced); leveling.enabled = newMode != .music; levelerOptions = leveling
@@ -143,7 +145,6 @@ struct ProcessingSettings: Codable, Equatable, Sendable {
     }
     func filterChain(sampleCount: Int?, inputLoudness: Double? = nil) -> String {
         var list: [String] = []
-        if let clip = ClipGain.filter(clipGain) { list.append(clip) }
         if enhancementOptions.repairClipping { list.append("adeclip=w=20:o=50:a=2:t=10:m=save") }
         if let gain = workingGain(inputLoudness: inputLoudness) { list.append("volume=" + String(format: "%.2f", gain) + "dB") }
         list += cleanupFilters(sampleCount: sampleCount)
@@ -542,7 +543,8 @@ enum AudioEngine {
         if settings.denoise && settings.cleanupOptions.method == .speech {
             sampleCount = try analysis.sampleCount ?? waveformData(input, duration: analysis.info.duration, token: token).sampleIndex
         } else { sampleCount = analysis.sampleCount }
-        let processingFilters = settings.filterChain(sampleCount: sampleCount, inputLoudness: analysis.levels.integrated)
+        let edits = settings.editFilters(duration: analysis.info.duration, sampleRate: analysis.info.sampleRate ?? 48000, canCut: !video)
+        let processingFilters = [edits, settings.filterChain(sampleCount: sampleCount, inputLoudness: analysis.levels.integrated)].compactMap { $0 }.joined(separator: ",")
         let measuring = try measure(input, token: token, duration: analysis.info.duration, filters: processingFilters, normalizer: settings.normalizer) { progress($0 * 0.3, "Analysing processing") }
         // loudnorm treats measured_LRA=0 as "not supplied" and silently falls back to dynamic mode. Steady material
         // longer than 3 s (tones, very constant loops) can measure exactly 0 LU, so pass a negligible positive value.
@@ -615,7 +617,7 @@ enum AudioEngine {
         let estimate = Int64(info.duration * 96000 * 8) + (info.isVideo ? info.byteCount : 0) + 200_000_000
         guard free > estimate else { throw cueError("Not enough free space for processing. Free up approximately \(ByteCountFormatter.string(fromByteCount: estimate, countStyle: .file)) on the Mac's internal drive.") }
         // Clip gain changes the cue's loudness and peaks, so measure the edited signal before planning the gain.
-        let clipFilter = ClipGain.filter(settings.clipGain)
+        let clipFilter = settings.editFilters(duration: info.duration, sampleRate: info.sampleRate ?? 48000, canCut: !info.isVideo)
         let sourceLevels = try clipFilter.map { filter in
             try measure(input, token: token, duration: info.duration, filters: filter) { progress($0 * 0.2, "Measuring clip gain edits") }
         } ?? analysis.levels
