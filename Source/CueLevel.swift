@@ -267,10 +267,43 @@ struct ContentView: View {
             }
         }
     }
+    /// Top of the right panel: one obvious button to Quick Level the selected cue and see the result.
+    @ViewBuilder func thisCueSection(_ job: CueJob) -> some View {
+        section {
+            HStack { Text("This cue").sectionTitle(); Spacer(); if model.workingID == job.id { ProgressView().controlSize(.small) } }
+            Text(job.source.lastPathComponent).font(.system(size: 12)).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.middle)
+            Button { model.quickLevelSelected() } label: {
+                Label(job.output == nil ? "Quick Level this cue" : "Quick Level again", systemImage: "bolt.fill")
+                    .font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity)
+            }.buttonStyle(CLButton(kind: .primary)).disabled(model.busy)
+            Text("To \(lufs(model.settings.target)) LUFS with one gain change\(model.evenOut ? ", evening out loud and quiet stretches first" : ""). Your original is never changed.").hint()
+            if let output = job.output, let analysis = job.analysis {
+                let evened = (job.clipGain ?? []).filter { $0.isAuto == true }.count
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(lufs(analysis.levels.integrated)).foregroundStyle(Theme.muted)
+                        Image(systemName: "arrow.right").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.muted)
+                        Text(lufs(output.levels.integrated)).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.teal)
+                        Text("LUFS").foregroundStyle(Theme.muted)
+                    }.monospacedDigit()
+                    if evened > 0 { Text("Evened out \(evened) stretch\(evened == 1 ? "" : "es") · see Clip gain").hint() }
+                    if let gain = output.gainApplied { Text("Gain \(signed(gain)) dB · peak \(lufs(output.levels.truePeak)) dBTP").hint() }
+                    HStack(spacing: 8) {
+                        Button { model.switchPreview(true); model.playPause() } label: { Label("Listen", systemImage: "play.fill") }.buttonStyle(CLButton(kind: .ghost))
+                        Button("Export…") { model.exportSelected() }.buttonStyle(CLButton()).disabled(model.busy)
+                        if job.exportURL != nil { Button("Show in Finder") { model.reveal() }.buttonStyle(CLButton(kind: .ghost)) }
+                    }
+                }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 8).fill(Theme.field))
+            }
+            if model.jobs.count > 1 {
+                Button("Quick Level all \(model.jobs.count) cues") { model.quickLevelAll() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)
+            }
+        }
+    }
     var quickLevelPill: some View {
         HStack(spacing: 10) {
             Toggle(isOn: Binding(get: { model.quickLevel }, set: { model.setQuickLevel($0) })) { EmptyView() }.toggleStyle(CLSwitch()).disabled(model.busy)
-            Text("Quick Level").font(.system(size: 13, weight: .semibold))
+            Text("Level on drop").font(.system(size: 13, weight: .semibold)).help("When on, every file you drop is Quick Levelled straight into the chosen folder")
             Button { model.chooseQuickFolder() } label: {
                 if let folder = model.quickFolder {
                     (Text("saving to ").foregroundColor(Theme.muted) + Text(folder.lastPathComponent).foregroundColor(Theme.bone.opacity(0.88))).font(.system(size: 12.5))
@@ -603,6 +636,7 @@ struct ContentView: View {
     var inspector: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                if let job = model.selected { thisCueSection(job) }
                 section {
                     HStack { Text("Level to").sectionTitle(); Spacer(); standardsMenu }
                     valueRow("Target", value: $model.settings.target, range: -30 ... -12, unit: "LUFS")

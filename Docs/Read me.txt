@@ -1,4 +1,4 @@
-CUELEVEL 1.3
+CUELEVEL 1.4
 Lossless loudness levelling for event playback
 
 Requires an Apple silicon Mac with macOS 13 or later.
@@ -7,6 +7,11 @@ INSTALL
 Open the CueLevel DMG and drag CueLevel into Applications. Quit any older version before replacing it.
 
 THE FAST WAY: QUICK LEVEL
+Select any cue and click "Quick Level this cue" at the top of the right panel. CueLevel evens out clearly loud or quiet
+stretches (switch "Even out" off for music), levels the cue to the target with one gain change and switches to Levelled
+so you can hear it. Export saves it. "Quick Level all cues" does the whole list.
+
+LEVEL ON DROP (HANDS-FREE)
 1. In the right-hand panel, switch on Quick Level and choose an output folder (for example on your show drive).
 2. Drop audio or video files anywhere in the window.
 3. Each file is measured, levelled to the target (−18 LUFS by default) and saved into the output folder under its own

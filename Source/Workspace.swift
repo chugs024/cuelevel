@@ -197,12 +197,16 @@ struct ExportReport: Codable {
     func analyze() { guard let id = selection else { return }; run(ids: [id], render: false) }
     func processSelected() { guard let id = selection else { return }; run(ids: [id], render: true) }
     func processQueue() { run(ids: jobs.filter { $0.output == nil }.map(\.id), render: true) }
-    private func run(ids: [UUID], render: Bool) {
+    /// Quick Level one cue from the inspector: lossless gain (plus Even out when on), then show the Levelled version.
+    /// Saved into the Quick Level folder when one is chosen; otherwise use Export.
+    func quickLevelSelected() { guard let id = selection else { return }; run(ids: [id], render: true, quickOverride: true) }
+    func quickLevelAll() { run(ids: jobs.map(\.id), render: true, quickOverride: true) }
+    private func run(ids: [UUID], render: Bool, quickOverride: Bool = false) {
         guard !busy, !ids.isEmpty else { return }
         busy = true; player.pause(); playing = false
         let cancellation = Cancellation(); token = cancellation
         // Quick Level always renders the lossless gain-only path, whatever output type a preset selected.
-        let quick = render && quickLevel && quickFolder != nil
+        let quick = render && (quickOverride || (quickLevel && quickFolder != nil))
         let options: ProcessingSettings = { var o = settings; if quick { o.format = .lossless }; return o }()
         Task {
             for id in ids {
@@ -244,7 +248,7 @@ struct ExportReport: Codable {
                         }.value
                         if let previous = current.output { try? FileManager.default.removeItem(at: previous.url.deletingLastPathComponent()) }
                         update(id) { $0.output = result; $0.exportURL = nil; $0.audioExportURL = nil; $0.progress = 1; $0.status = result.warnings.isEmpty ? .ready : .review; $0.message = result.warnings.isEmpty ? "Ready to export" : "Review notes before export" }
-                        if quickLevel, options.format == .lossless, let folder = quickFolder {
+                        if quick, let folder = quickFolder {
                             let destination = Self.uniqueDestination(in: folder, name: current.source.deletingPathExtension().lastPathComponent + "." + result.url.pathExtension)
                             let sources = jobs.map(\.source)
                             do {
@@ -266,7 +270,7 @@ struct ExportReport: Codable {
             workingID = nil; busy = false; token = nil
             let stopped = jobs.contains { $0.status == .cancelled }
             let thisRunStopped = (try? cancellation.check()) == nil
-            status = stopped ? "Stopped. Remaining files stay in the queue." : quickLevel ? "Quick Level finished. Levelled files are in \(quickFolder?.lastPathComponent ?? "the output folder")." : "Finished. Review your results before export."
+            status = stopped ? "Stopped. Remaining files stay in the queue." : (quick && quickFolder == nil) ? "Quick Level finished. Listen in Levelled, then Export to save." : quick ? "Quick Level finished. Levelled files are in \(quickFolder?.lastPathComponent ?? "the output folder")." : "Finished. Review your results before export."
             persist()
             if quick, let folder = quickFolder { writeShowReport(into: folder) }
             if quickLevel, quickFolder != nil, !thisRunStopped {
