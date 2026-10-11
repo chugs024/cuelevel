@@ -448,7 +448,14 @@ struct ContentView: View {
         VStack(spacing: 10) {
             HStack {
                 Segments(options: [(false, "Original"), (true, "Levelled")], selection: Binding(get: { model.processedPreview }, set: { model.switchPreview($0) }))
-                    .frame(width: 190).disabled(job.output == nil)
+                    .frame(width: 190).disabled(job.output == nil || model.clipEditing)
+                Button {
+                    model.clipEditing.toggle()
+                    if model.clipEditing { model.switchPreview(false) } else { model.selectedRegion = nil }
+                } label: {
+                    Label(model.clipEditing ? "Done editing" : "Clip gain" + (ClipGain.active(job.clipGain).isEmpty ? "" : " · \(ClipGain.active(job.clipGain).count)"), systemImage: "slider.vertical.3")
+                }.buttonStyle(CLButton(kind: model.clipEditing ? .primary : .ghost)).disabled(job.analysis == nil || model.busy)
+                .help("Raise or lower sections of this cue, like clip gain in Pro Tools")
                 Spacer()
                 if !model.currentCurve.isEmpty {
                     HStack(spacing: 14) {
@@ -457,7 +464,13 @@ struct ContentView: View {
                     }.font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                 }
             }
-            Waveform(peaks: model.currentWaveform, curve: model.currentCurve, target: job.output?.settings.target ?? model.settings.target, position: model.playhead, duration: model.duration, seek: model.seek)
+            if model.clipEditing, let analysis = job.analysis {
+                ClipGainWaveform(peaks: analysis.waveform, duration: analysis.info.duration, position: model.playhead, regions: job.clipGain ?? [], selected: model.selectedRegion,
+                                 onSeek: model.seek, onCreate: { model.addRegion(start: $0, end: $1) }, onChange: { model.updateRegion($0) }, onSelect: { model.selectedRegion = $0 })
+                ClipGainBar()
+            } else {
+                Waveform(peaks: model.currentWaveform, curve: model.currentCurve, target: job.output?.settings.target ?? model.settings.target, position: model.playhead, duration: model.duration, seek: model.seek)
+            }
             HStack(spacing: 12) {
                 Button { model.playPause() } label: {
                     Image(systemName: model.playing ? "pause.fill" : "play.fill").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.base)

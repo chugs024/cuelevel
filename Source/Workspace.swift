@@ -20,6 +20,8 @@ struct CueJob: Identifiable, Codable {
     var progress = 0.0
     var audioExportURL: URL? = nil
     var exportURL: URL?
+    /// Clip gain sections drawn on this cue (1.2). Applied when the cue is levelled; the output replaces the normal one.
+    var clipGain: [GainRegion]? = nil
 }
 struct SavedPreset: Codable, Identifiable { var id = UUID(); var name: String; var settings: ProcessingSettings }
 struct Session: Codable {
@@ -56,7 +58,7 @@ struct ExportReport: Codable {
 }
 @MainActor final class Workspace: ObservableObject {
     @Published var jobs: [CueJob] = []
-    @Published var selection: UUID? { didSet { loadPlayer() } }
+    @Published var selection: UUID? { didSet { selectedRegion = nil; loadPlayer() } }
     @Published var settings = Workspace.venueDefaults { didSet { persist() } }
     /// New sessions start at the live-venue standard: −18 LUFS, −1 dBTP.
     static var venueDefaults: ProcessingSettings { var s = ProcessingSettings(); s.target = -18; s.peak = -1; return s }
@@ -107,7 +109,9 @@ struct ExportReport: Codable {
     var currentCurve: [Float] { processedPreview ? (selected?.output?.loudnessCurve ?? []) : (selected?.analysis?.loudnessCurve ?? []) }
     var duration: Double { selected?.analysis?.info.duration ?? 0 }
     var outputIsStale: Bool {
-        guard let used = selected?.output?.settings else { return false }
+        guard let job = selected, var used = job.output?.settings else { return false }
+        if ClipGain.active(used.clipGain) != ClipGain.active(job.clipGain) { return true }
+        used.clipGain = nil
         // Per-cue recommendations and Quick Level legitimately change some settings per cue; compare what the user controls.
         if autoRecommend || used.format == .lossless {
             return used.target != settings.target || used.peak != settings.peak || used.mode != settings.mode || (used.format == .lossless) != (settings.format == .lossless || quickLevel) || (used.format == .lossless && used.peakLimit != settings.peakLimit)
@@ -217,7 +221,8 @@ struct ExportReport: Codable {
                         }.value
                     }
                     update(id) { $0.analysis = analysis }
-                    let cueOptions = Self.settingsForCue(options, analysis: analysis, library: references, recommend: autoRecommend && !quick)
+                    var cueOptions = Self.settingsForCue(options, analysis: analysis, library: references, recommend: autoRecommend && !quick)
+                    cueOptions.clipGain = jobs.first(where: { $0.id == id })?.clipGain
                     if render {
                         let renderDirectory = directory.appendingPathComponent("Cache/\(id.uuidString)/\(UUID().uuidString)", isDirectory: true)
                         let result = try await Task.detached {
@@ -330,6 +335,64 @@ struct ExportReport: Codable {
             status = "Reference library imported: \(references.summary)"
         } catch { self.error = error.localizedDescription }
     }
+    // MARK: Clip gain (1.2)
+    @Published var clipEditing = false
+    @Published var selectedRegion: UUID?
+    @Published var measuringSection = false
+    var selectedRegions: [GainRegion] { selected?.clipGain ?? [] }
+
+    /// Replaces the selected cue's regions (each normalised to the cue's length) and saves the session.
+    func setRegions(_ regions: [GainRegion]) {
+        guard let id = selection, let duration = selected?.analysis?.info.duration, duration > 0 else { return }
+        update(id) { $0.clipGain = regions.map { $0.normalized(duration: duration) }.sorted { $0.start < $1.start } }
+        persist()
+    }
+    func addRegion(start: Double, end: Double) {
+        guard let duration = selected?.analysis?.info.duration else { return }
+        let region = GainRegion(start: min(start, end), end: max(start, end)).normalized(duration: duration)
+        // A new section replaces any overlapping ones, like drawing a new clip-gain range in Pro Tools.
+        let kept = selectedRegions.filter { $0.end <= region.start || $0.start >= region.end }
+        setRegions(kept + [region]); selectedRegion = region.id
+    }
+    func updateRegion(_ region: GainRegion) {
+        setRegions(selectedRegions.map { $0.id == region.id ? region : $0 })
+    }
+    func nudgeSelectedRegion(by delta: Double) {
+        guard var region = selectedRegions.first(where: { $0.id == selectedRegion }) else { return }
+        region.gain += delta; updateRegion(region)
+    }
+    func deleteSelectedRegion() {
+        guard let id = selectedRegion else { return }
+        setRegions(selectedRegions.filter { $0.id != id }); selectedRegion = nil
+    }
+    func clearRegions() { setRegions([]); selectedRegion = nil }
+    /// Marks the selected section as the one that sounds right. Only one reference per cue; its own gain is kept.
+    func markSelectedAsReference() {
+        guard let id = selectedRegion else { return }
+        setRegions(selectedRegions.map { var r = $0; r.isReference = r.id == id ? !r.isReference : false; return r })
+    }
+    var referenceRegion: GainRegion? { selectedRegions.first { $0.isReference } }
+    /// Sets the selected section's gain so its loudness matches the reference section, measured with FFmpeg on the source.
+    func matchSelectedToReference() {
+        guard !busy, !measuringSection, let job = selected, let info = job.analysis?.info,
+              let reference = referenceRegion, let target = selectedRegions.first(where: { $0.id == selectedRegion }), target.id != reference.id else { return }
+        measuringSection = true; status = "Measuring the two sections"
+        let others = selectedRegions.filter { $0.id != target.id }
+        let source = job.source, token = Cancellation()
+        Task {
+            defer { measuringSection = false }
+            do {
+                let (good, section) = try await Task.detached {
+                    (try AudioEngine.sectionLoudness(source, info: info, start: reference.start, end: reference.end, regions: others, token: token),
+                     try AudioEngine.sectionLoudness(source, info: info, start: target.start, end: target.end, regions: others, token: token))
+                }.value
+                guard let gain = ClipGain.matchGain(reference: good, section: section) else { throw cueError("One of the sections is silent, so it cannot be matched.") }
+                var matched = target; matched.gain = gain; updateRegion(matched)
+                status = "Matched: section was \(String(format: "%.1f", section)) LUFS, reference \(String(format: "%.1f", good)) LUFS → \(gain >= 0 ? "+" : "")\(String(format: "%.1f", gain)) dB"
+            } catch { self.error = error.localizedDescription; status = "Sections not matched" }
+        }
+    }
+
     /// Opens the "Add as reference" sheet for the selected, measured cue.
     func beginAddingReference() {
         guard !busy, let job = selected, job.analysis != nil else { return }

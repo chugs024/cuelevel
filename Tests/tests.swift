@@ -346,6 +346,28 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         check(try migrated(target: -16, revision: nil).target == -16, "a deliberate target is kept")
         check(try migrated(target: -23, revision: 2).target == -23, "a -23 chosen after the change is kept")
         print("PASS: -18 LUFS standard and one-time migration")
+
+        // 24. Clip gain: region rules, envelope, filter, and a real render where one section is turned down 6 dB.
+        let region = GainRegion(start: 3, end: 1, gain: 40, fadeIn: 9, fadeOut: 0).normalized(duration: 10)
+        check(region.start == 1 && region.end == 3 && region.gain == 24 && near(region.fadeIn, 1) && near(region.fadeOut, GainRegion.minimumFade), "region normalised: \(region)")
+        let half = GainRegion(start: 2, end: 4, gain: -6.0206, fadeIn: 0.5, fadeOut: 0.5)
+        check(near(ClipGain.multiplier(at: 3, regions: [half]), 0.5, 0.001) && ClipGain.multiplier(at: 1, regions: [half]) == 1 && near(ClipGain.multiplier(at: 2.25, regions: [half]), 0.75, 0.001), "envelope with fades")
+        check(ClipGain.filter([GainRegion(start: 0, end: 1, gain: 0)]) == nil && ClipGain.filter(nil) == nil, "no filter when nothing changes")
+        check(ClipGain.filter([half])!.hasPrefix("aeval=exprs='val(ch)*max(0,1+") && !ClipGain.filter([half])!.contains("T-"), "filter uses the sample index")
+        check(ClipGain.matchGain(reference: -20, section: -26.04) == 6 && ClipGain.matchGain(reference: -10, section: -60) == 24, "match gain clamped")
+        let speechLike = try make("sections.wav", ["-f","lavfi","-i","sine=frequency=330:sample_rate=48000:duration=8","-af","volume=-16dB","-ac","2","-c:a","pcm_s24le"])
+        let sectionsAnalysis = try AudioEngine.analyze(speechLike, token: Cancellation()) { _, _ in }
+        var edited = lossless; edited.clipGain = [GainRegion(start: 4, end: 8, gain: -6, fadeIn: 0.05, fadeOut: 0.05)]
+        let editedOut = try AudioEngine.process(speechLike, analysis: sectionsAnalysis, settings: edited, directory: area.appendingPathComponent("render-clip"), token: Cancellation()) { _, _ in }
+        let outInfo = try AudioEngine.inspect(editedOut.url, token: Cancellation())
+        let firstHalf = try AudioEngine.sectionLoudness(editedOut.url, info: outInfo, start: 0.5, end: 3.5, regions: [], token: Cancellation())
+        let secondHalf = try AudioEngine.sectionLoudness(editedOut.url, info: outInfo, start: 4.5, end: 7.5, regions: [], token: Cancellation())
+        check(near(firstHalf - secondHalf, 6, 0.2), "edited section is 6 dB quieter: \(firstHalf) vs \(secondHalf)")
+        check(abs(editedOut.levels.integrated - (-18 - (editedOut.shortfall ?? 0))) < 0.5 && outInfo.sampleRate == 48000, "edited cue still levelled: \(editedOut.levels.integrated)")
+        check(editedOut.warnings.contains { $0.contains("Clip gain changed the volume of 1 section") }, "clip gain reported")
+        let measuredMatch = try AudioEngine.sectionLoudness(speechLike, info: sectionsAnalysis.info, start: 4.5, end: 7.5, regions: edited.clipGain!, token: Cancellation())
+        check(near(measuredMatch, sectionsAnalysis.levels.integrated - 6, 0.3), "section measured after clip gain")
+        print("PASS: clip gain sections, fades, render and section measurement")
         print("ALL 1.1 TESTS PASSED")
     }
 }

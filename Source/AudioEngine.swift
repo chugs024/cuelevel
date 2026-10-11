@@ -106,6 +106,8 @@ struct ProcessingSettings: Codable, Equatable, Sendable {
     var workingLevel: Double? = nil
     /// Lossless mode only: maximum dB of transparent true-peak limiting allowed to reach the target. nil = never limit (cue stays quieter).
     var peakLimit: Double? = nil
+    /// Per-cue clip gain (1.2), applied before everything else. Set from the cue when it is processed; nil for batch settings.
+    var clipGain: [GainRegion]? = nil
     mutating func setMode(_ newMode: ContentMode) {
         mode = newMode
         var leveling = LevelerSettings(); leveling.apply(newMode == .music ? .gentle : newMode == .voice ? .strong : .balanced); leveling.enabled = newMode != .music; levelerOptions = leveling
@@ -141,6 +143,7 @@ struct ProcessingSettings: Codable, Equatable, Sendable {
     }
     func filterChain(sampleCount: Int?, inputLoudness: Double? = nil) -> String {
         var list: [String] = []
+        if let clip = ClipGain.filter(clipGain) { list.append(clip) }
         if enhancementOptions.repairClipping { list.append("adeclip=w=20:o=50:a=2:t=10:m=save") }
         if let gain = workingGain(inputLoudness: inputLoudness) { list.append("volume=" + String(format: "%.2f", gain) + "dB") }
         list += cleanupFilters(sampleCount: sampleCount)
@@ -590,11 +593,16 @@ enum AudioEngine {
         let free = (try? FileManager.default.attributesOfFileSystem(forPath: directory.path)[.systemFreeSize] as? NSNumber)?.int64Value ?? Int64.max
         let estimate = Int64(info.duration * 96000 * 8) + (info.isVideo ? info.byteCount : 0) + 200_000_000
         guard free > estimate else { throw cueError("Not enough free space for processing. Free up approximately \(ByteCountFormatter.string(fromByteCount: estimate, countStyle: .file)) on the Mac's internal drive.") }
-        let plan = LosslessPlan(levels: analysis.levels, target: settings.target, ceiling: settings.peak, maxLimiting: settings.peakLimit ?? 0)
+        // Clip gain changes the cue's loudness and peaks, so measure the edited signal before planning the gain.
+        let clipFilter = ClipGain.filter(settings.clipGain)
+        let sourceLevels = try clipFilter.map { filter in
+            try measure(input, token: token, duration: info.duration, filters: filter) { progress($0 * 0.2, "Measuring clip gain edits") }
+        } ?? analysis.levels
+        let plan = LosslessPlan(levels: sourceLevels, target: settings.target, ceiling: settings.peak, maxLimiting: settings.peakLimit ?? 0)
         guard plan.gain.isFinite, abs(plan.gain) < 60 else { throw cueError("The soundtrack is silent or too quiet to level reliably.") }
         let output = directory.appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_CueLevel." + ext)
         let sampleFormat = info.audioDescription.hasPrefix("pcm_f") ? "pcm_f32le" : "pcm_s24le"
-        var chain = "aformat=channel_layouts=stereo,volume=" + String(format: "%.4f", plan.gain) + "dB:precision=double"
+        var chain = "aformat=channel_layouts=stereo," + (clipFilter.map { $0 + "," } ?? "") + "volume=" + String(format: "%.4f", plan.gain) + "dB:precision=double"
         if plan.limiting > 0.05 {
             // Only when the user allowed limiting: 4x oversampled look-ahead limiter (approximates true peak), then back to the source rate.
             let limit = pow(10, (settings.peak - 0.3) / 20)
@@ -613,12 +621,15 @@ enum AudioEngine {
         if extraTracks { args += ["-c:a", "copy"] }
         args += ["-c:a:0", sampleFormat, "-map_metadata", "0", "-map_chapters", "0", "-n", output.path]
         do {
-            try run(args, token: token, duration: info.duration) { progress($0 * 0.6, "Writing lossless copy") }
+            let base = clipFilter == nil ? 0.0 : 0.2
+            try run(args, token: token, duration: info.duration) { progress(base + $0 * (0.6 - base), "Writing lossless copy") }
             let levels = try measure(output, token: token, duration: info.duration) { progress(0.6 + $0 * 0.3, "Verifying output") }
             progress(0.92, "Building output waveform")
             let wave = try waveform(output, duration: info.duration, token: token)
             func f(_ v: Double) -> String { String(format: "%.1f", v) }
             var warnings: [String] = []
+            let edits = ClipGain.active(settings.clipGain).count
+            if edits > 0 { warnings.append("Clip gain changed the volume of \(edits) section\(edits == 1 ? "" : "s") before levelling. Those sections are volume changes only; listen through the fades.") }
             if plan.shortfall > 0.05 {
                 warnings.append("Kept \(f(plan.shortfall)) dB below the \(f(settings.target)) LUFS target so the loudest peak stays under \(f(settings.peak)) dBTP without limiting. Output: \(f(levels.integrated)) LUFS.")
             }
@@ -628,6 +639,7 @@ enum AudioEngine {
             if abs(levels.integrated - (settings.target - plan.shortfall)) > (plan.limiting > 0.05 ? 1.0 : 0.5) { warnings.append("Measured output is \(f(levels.integrated)) LUFS, which differs from the planned \(f(settings.target - plan.shortfall)) LUFS. Review before use.") }
             if levels.truePeak > settings.peak + 0.2 { warnings.append("Output true peak \(f(levels.truePeak)) dBTP is above the \(f(settings.peak)) dBTP ceiling. Review before use.") }
             if analysis.levels.truePeak >= 0 { warnings.append("Source reaches full scale. Existing distortion may remain.") }
+            if clipFilter != nil, sourceLevels.truePeak > 0 { warnings.append("Clip gain pushed peaks over full scale (\(f(sourceLevels.truePeak)) dBTP) before levelling. The levelling gain brings them back down; lower the boosted sections if the output still sounds harsh.") }
             if info.channels > 2 { warnings.append("Surround source downmixed to stereo; the downmix is not lossless.") }
             if let n = info.audioStreams, n > 1 { warnings.append(info.isVideo ? "\(n) audio tracks: the first is levelled, the other \(n - 1) are copied untouched." : "Only the first of \(n) audio tracks is kept: WAV holds one track.") }
             if ext == "mkv" { warnings.append("Saved as MKV so every stream could be copied untouched. Resolume may not open MKV; supply MOV or MP4 sources for playback files.") }
