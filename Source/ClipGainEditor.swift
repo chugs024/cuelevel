@@ -26,7 +26,8 @@ struct ClipGainWaveform: View {
 
     var body: some View {
         GeometryReader { geometry in
-            Canvas { context, size in draw(&context, size) }
+            let size = geometry.size
+            Canvas { context, canvasSize in draw(&context, canvasSize) }
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { value in dragChanged(value, size) }
