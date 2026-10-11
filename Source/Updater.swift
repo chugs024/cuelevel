@@ -191,13 +191,24 @@ enum UpdateState: Equatable {
     }
 
     @discardableResult
-    nonisolated static func tool(_ path: String, _ arguments: [String]) throws -> String {
+    nonisolated static func tool(_ path: String, _ arguments: [String], timeout: TimeInterval = 300) throws -> String {
+        // Output goes to a temporary file, not a pipe: `hdiutil attach` leaves a helper process holding the pipe open,
+        // so reading a pipe to its end would wait forever (the 1.1.0–1.2.0 "Checking the signature and installing" hang).
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("cuelevel-tool-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: log) }
+        let handle = try FileHandle(forWritingTo: log)
+        defer { try? handle.close() }
         let process = Process(); process.executableURL = URL(fileURLWithPath: path); process.arguments = arguments
-        let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
+        process.standardOutput = handle; process.standardError = handle; process.standardInput = FileHandle.nullDevice
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
         try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let text = String(decoding: data, as: UTF8.self)
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            throw cueError("\(URL(fileURLWithPath: path).lastPathComponent) did not finish. Try the update again, or download it from the release page.")
+        }
+        let text = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
         guard process.terminationStatus == 0 else { throw cueError("\(URL(fileURLWithPath: path).lastPathComponent) failed: \(text.trimmingCharacters(in: .whitespacesAndNewlines))") }
         return text
     }

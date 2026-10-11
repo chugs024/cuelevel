@@ -369,6 +369,22 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let measuredMatch = try AudioEngine.sectionLoudness(speechLike, info: sectionsAnalysis.info, start: 4.5, end: 7.5, regions: clipSettings.clipGain!, token: Cancellation())
         check(near(measuredMatch, sectionsAnalysis.levels.integrated - 6, 0.3), "section measured after clip gain")
         print("PASS: clip gain sections, fades, render and section measurement")
+
+        // 25. Updater install path on a real disk image: attach, inspect, refuse an unsigned app, detach — without hanging.
+        let dmgRoot = area.appendingPathComponent("dmg-root"); let fakeApp = dmgRoot.appendingPathComponent("CueLevel.app/Contents")
+        try FileManager.default.createDirectory(at: fakeApp.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
+        try #"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>local.halllevel.app</string><key>CFBundleVersion</key><string>999</string><key>CFBundleExecutable</key><string>CueLevel</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>"#.write(to: fakeApp.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+        try Data("#!/bin/sh\n".utf8).write(to: fakeApp.appendingPathComponent("MacOS/CueLevel"))
+        let testDMG = area.appendingPathComponent("update-test.dmg")
+        try Updater.tool("/usr/bin/hdiutil", ["create", "-volname", "CueLevel test", "-srcfolder", dmgRoot.path, "-fs", "HFS+", "-format", "UDZO", testDMG.path])
+        let fakeFeed = Appcast(schema: 1, version: "9.9.9", build: 999, minimumSystemVersion: "13.0", published: nil, url: URL(string: "https://example.com/x.dmg")!, sha256: try Updater.sha256(of: testDMG), size: nil, teamID: nil, notes: nil)
+        let started = Date()
+        do { _ = try Updater.verifyAndStage(dmg: testDMG, feed: fakeFeed, destination: area.appendingPathComponent("Apps/CueLevel.app")); check(false, "unsigned update accepted") }
+        catch { check(error.localizedDescription.contains("not signed by CueLevel's developer"), "unsigned update refused: \(error.localizedDescription)") }
+        check(Date().timeIntervalSince(started) < 60, "update check finished promptly (\(Int(Date().timeIntervalSince(started))) s)")
+        let mounts = try Updater.tool("/sbin/mount", [])
+        check(!mounts.contains("CueLevel-update-"), "disk image detached after checking")
+        print("PASS: update install path attaches, refuses an unsigned app and detaches without hanging")
         print("ALL 1.1 TESTS PASSED")
     }
 }
