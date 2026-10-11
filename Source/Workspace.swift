@@ -120,7 +120,11 @@ struct ExportReport: Codable {
         guard let job = selected, var used = job.output?.settings else { return false }
         if ClipGain.active(used.clipGain) != ClipGain.active(job.clipGain) { return true }
         let duration = job.analysis?.info.duration ?? 0
-        func audible(_ e: CueEdit?) -> CueEdit? { e.map { var n = $0.normalized(duration: duration); n.markers = []; return n.changesAudio(duration: duration) ? n : nil } }
+        func audible(_ e: CueEdit?) -> CueEdit? {
+            guard let e else { return nil }
+            var n = e.normalized(duration: duration); n.markers = []
+            return n.changesAudio(duration: duration) ? n : nil
+        }
         if audible(used.edit) != audible(job.edit) { return true }
         used.clipGain = nil; used.edit = nil
         // Per-cue recommendations and Quick Level legitimately change some settings per cue; compare what the user controls.
