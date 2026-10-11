@@ -1,0 +1,58 @@
+CUELEVEL — FIRST REFERENCE LIBRARY
+
+Six user-approved source references analysed locally. The original audio files have not been altered, copied into the app, or uploaded. Their SHA-256 hashes were checked before and after analysis.
+
+This is the calibration dataset for development, not a trained model or a new processing preset. It is not bundled into the installer. No automatic EQ matching or changes to CueLevel defaults have been made.
+
+Measured references (original channel layout)
+
+21 Arti w_ Jaynaad.wav
+  276.9 seconds | Stereo | -6.63 LUFS | +1.02 dBTP | 2.9 LU range
+
+Bal Geet.wav
+  533.7 seconds | Stereo | -10.92 LUFS | +0.11 dBTP | 4.0 LU range
+
+Cue 24B_Sayukta 2.wav
+  44.4 seconds | Mono | -30.27 LUFS | -9.60 dBTP | 7.0 LU range
+
+Cue 18B_Balak 2.wav
+  60.8 seconds | Mono | -28.51 LUFS | -8.55 dBTP | 6.7 LU range
+
+Cue 21A_Kishore 1.wav
+  90.8 seconds | Mono | -27.98 LUFS | -8.16 dBTP | 6.1 LU range
+
+Act1_Scene1  Mix.wav
+  142.7 seconds | Stereo | -21.77 LUFS | -1.71 dBTP | 6.5 LU range
+
+Confirmed content groups
+Audio only (music-preserving profile): Arti — singing with music; Bal Geet — bhajan.
+Voice: Sayukta 2, Balak 2, Kishore 1 and Act1_Scene1 Mix — talking.
+No supplied reference is currently labelled Audio + voice (spoken dialogue mixed with music). Singing belongs to the music group. Classification does not automatically enable denoising or change processing settings.
+The three mono talking cues span -30.27 to -27.98 LUFS; the stereo Act1 dialogue is -21.77 LUFS. Keep this variation visible rather than flattening it into one voice target before playback-level confirmation.
+
+Findings
+The reference set spans 23.64 LU in measured integrated loudness. Do not average these tracks into a single mastering target. Their confirmed content roles and still-unconfirmed intended relative levels need to remain separate.
+Arti and Bal Geet have estimated true peaks above 0 dBTP. They can still describe a preferred sound, but those peak levels should not become output ceilings.
+The Sayukta, Balak and Kishore files are mono. Both native measurements and the app's stereo conversion are recorded; actual venue playback also depends on mono routing.
+Act1_Scene1 Mix measures -21.77 LUFS / -1.71 dBTP. It is a useful candidate for comparison, but it is not automatically selected as the venue standard.
+
+How this supports development
+1. Content categories are confirmed from the user's descriptions. Confirm intended relative playback levels before deriving targets; labels alone do not establish those targets.
+2. Keep preferred tonal balance separate from loudness targets and peak ceilings. The seven spectral bands are descriptive measurements, not instructions to EQ every track toward an average.
+3. Use these already-mastered sources as preservation tests: compare at matched loudness and listen for pumping, lost transients, altered voice clarity and stereo changes.
+4. Add problematic original cues and their engineer-approved corrected versions, ideally aligned versions of the same recording. These pairs provide evidence of the corrections the system should make.
+5. Validate candidate presets on the venue PA at the established desk/system gain. These files alone do not establish audience sound pressure or room correction.
+
+Files
+library.json: versioned combined measurement database; no private absolute source paths.
+<reference-id>.json: individual records identified by source SHA-256.
+Measurements.csv: human-readable measurement summary.
+annotations.json: user-confirmed labels keyed by source hash, retained when the analysis is rerun.
+The private path map and repeatable analysis script live in work/reference-analysis inside this project.
+
+Measurement method
+FFmpeg 7.1 loudnorm input measurements for integrated loudness, estimated true peak and loudness range; no processed output retained. Native channel layout and CueLevel aformat=channel_layouts=stereo measured independently. Mono conversion changes per-channel peak, so compare like-for-like.
+Spectrum and 1-second RMS use decoded 48 kHz stereo PCM. Spectral fractions sum left/right power through 8192-sample Hann windows with 50% overlap, in bands 20–80, 80–250, 250–1000, 1000–2500, 2500–6000, 6000–12000 and 12000–20000 Hz. Spectrum includes the whole file and is not loudness-gated. RMS is not LUFS. The final partial RMS second is omitted. These measurements do not identify harshness, clipping damage, speech content or artistic intent by themselves.
+Documentation: https://ffmpeg.org/ffmpeg-filters.html#loudnorm
+
+All six content categories are recorded. Intended relative playback levels remain unconfirmed. Permission to use these references for local development does not establish permission to distribute the recordings with a commercial app.

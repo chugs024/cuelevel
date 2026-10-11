@@ -1,0 +1,33 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: FFmpeg engine (cached)
+        id: engine
+        uses: actions/cache@v4
+        with:
+          path: Engine
+          key: ffmpeg-7.1-lgpl-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-ffmpeg-lgpl.sh') }}
+      - name: Build LGPL FFmpeg
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: Scripts/build-ffmpeg-lgpl.sh Engine
+      - name: Tests
+        run: FFMPEG=Engine/ffmpeg Scripts/run-tests.sh
+      - name: Build CueLevel Dev.app
+        run: VERSION=0.0.0-ci BUILD=${{ github.run_number }} FFMPEG=Engine/ffmpeg Scripts/make-app.sh build --dev
+      - name: Zip
+        run: ditto -c -k --keepParent "build/CueLevel Dev.app" "build/CueLevel-Dev-${{ github.sha }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CueLevel-Dev-unsigned
+          path: build/*.zip
+          retention-days: 14

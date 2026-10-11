@@ -1,0 +1,5 @@
+Created with the built-in image-generation tool.
+
+Use case: logo-brand. Create one production-ready macOS application icon for CueLevel, a professional simple audio levelling app for live event soundtracks. Square 1024x1024 asset. A beautifully finished dark midnight navy rounded-square tile, straight-on orthographic view, centered with a small transparent outer margin and genuinely transparent corners outside the tile. Central bold luminous turquoise audio waveform made of 9 thick rounded vertical bars: on the left heights are uneven with one tall peak, on the right they settle into three equal moderate-height bars, communicating controlled consistent levels. Restrained dimensional satin/glass finish with crisp edges and subtle cyan highlights, not excessive neon bloom. Strong clean silhouette legible at tiny Dock sizes. Symbol occupies roughly 65 percent of tile width. Premium understated audio-tool aesthetic. No letters, no text, no labels, no mockup, no extra objects, no background scene, no watermark. Deliver only the icon.
+
+The generated PNG is preserved unchanged. Standard macOS icon sizes were produced with sips and packaged with iconutil.

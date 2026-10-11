@@ -1,0 +1,5 @@
+RNNoise original speech model, FFmpeg text representation.
+Source: https://raw.githubusercontent.com/richardpl/arnndn-models/0fda24c46d78f0207d820bb970fbe85c1971b39c/std.rnnn
+Upstream: https://github.com/xiph/rnnoise
+The model repository identifies std.rnnn as the original Xiph RNNoise model.
+SHA256: 6b8943dc4a9b6b24425873992a44f29c0577503276456af46a8854774faeb294

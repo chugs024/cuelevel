@@ -1,0 +1,109 @@
+CUELEVEL 1.0 — RELEASE READINESS (10 October 2026)
+
+Status: feature-complete release candidate. Not yet compiled and tested on a Mac in this round, not yet heard on the
+venue PA, and not yet signed or notarised. The 0.6.0 sections further down are kept as history.
+
+READY IN THE SOURCE
+• Quick Level: drop → measure → lossless gain → save to one folder, no dialogs; batches queue; never overwrites.
+• Lossless path: picture/subtitles/timecode copied bit-for-bit; one exact gain change; uncompressed audio at the source
+  sample rate; MOV for QuickTime-family video, MKV otherwise; extra audio tracks copied untouched; stay-quieter rule;
+  optional oversampled peak limiter with a user cap (off by default).
+• Watch folder with finished-copy detection.
+• Show report (CSV + printable HTML), written automatically after each Quick Level batch and on demand.
+• Loudness standards menu; loudness-over-time graph (source and output); source checks.
+• Reference library integration with per-cue recommendations (Preserve / Gentle correction).
+• Level-independent dynamics (working level) for the non-lossless processing chain.
+• Fix: steady material measuring 0 LU no longer forces loudnorm into dynamic mode.
+• Surround (downmixed, flagged) and multi-track input accepted.
+• Version 1.0.0 (build 9). New icon. Accent colour matches the icon.
+
+MUST BE DONE ON THE MAC BEFORE SALE
+1. Run work/v07-tests/run-tests.command until it prints ALL CHECKS PASSED (type-checks the whole app, runs the 1.0
+   tests and the 0.6 regression test). Then build CueLevel Dev with Source/build-dev.command and try the workflow.
+2. Licensing: run Source/build-ffmpeg-lgpl.command. CueLevel needs no GPL component — verified 10 Oct 2026 by building
+   FFmpeg 7.1 with --disable-gpl and confirming every filter, encoder, decoder and container CueLevel uses is present.
+   The current bundled binary (imageio-ffmpeg) is GPL; do not sell builds containing it. Keep the FFmpeg source archive
+   the script saves, and offer it to customers (LGPL source requirement). Codec patent questions (AAC encoding,
+   H.264/HEVC decoding) still deserve qualified advice for the markets you sell in.
+3. Venue check: level a few real cues, play the MOV and WAV outputs in Resolume on the Mac Studio, and listen on the PA
+   at the normal desk gain. Confirm −18 LUFS suits the room; it is a setting, not a calibration.
+4. Signing and notarisation: one-time `xcrun notarytool store-credentials CueLevel-notary …` (see the top of
+   Source/release.command), then run Source/release.command. It refuses to overwrite an existing DMG, runs the tests,
+   signs with your Developer ID, notarises and staples the app and DMG, and verifies them with Gatekeeper.
+
+NOT INCLUDED (business decisions, not code fixes)
+• Selling and licence keys: choose a storefront (e.g. Paddle, Lemon Squeezy, Gumroad, or the Mac App Store, which
+  would require sandboxing work). No purchase or licence check is built in.
+• Automatic updates: none built in. Sparkle is the usual choice for direct-download Mac apps; it needs a signing key and
+  a place to host the update feed.
+• Support: decide a support address and add it to the Read me and the website. The JSON and show reports are what
+  to ask customers for when diagnosing a problem.
+• Broader compatibility matrix: Intel Macs are not supported (arm64 build); test macOS 13, 14 and 15; very long files;
+  external-drive disconnects; variable-frame-rate video; ProRes 4444 with alpha; HEVC in MOV.
+
+-------------------------------------------------------------------------------
+EARLIER RELEASE NOTES (0.6.0 AND BEFORE)
+
+CUELEVEL 0.6.0 — RELEASE READINESS
+
+This is a working development build for evaluation, not a completed commercial release.
+
+Implemented
+• Three content modes: Audio only, Audio + voice, Voice.
+• Native resizable Mac workspace, explicit buttons, file queue, source/processed waveforms, seek/play/pause, and loudness-matched comparison.
+• Two-pass loudness normalisation and post-encoding measurement, gentle peak compression, rumble filtering, de-essing, FFT noise reduction, and bounded dynamic EQ.
+• Local saved presets, reference-loudness measurement, restored queue/settings/results, cancellation, per-file failure handling, and source-change detection.
+• Stereo WAV, FLAC and M4A exports; copied-picture video output. Atomic exports preserve source files. Batch output collisions use numbered filenames.
+• JSON reports record measured loudness, peaks, range, settings, timestamp, and review notes.
+
+Auphonic reference
+The product was informed by Auphonic's separation of levelling, filtering, loudness specifications and output workflow: https://auphonic.com/
+CueLevel is independently implemented. It does not use Auphonic's algorithms or services, and does not claim equivalent audio quality.
+No speech/music separation, de-reverberation, transcription, filler-word editing, stem mixing, cloud publishing, watch-folder processing or editable gain automation is implemented. No controls advertise those features.
+
+Before selling
+1. Complete a reproducible audio-engine distribution package with the corresponding source, build configuration and dependency notices. The currently bundled FFmpeg 7.1 binary comes from imageio-ffmpeg 0.6.0 and enables GPL components, including x264/x265. Confirm the chosen distribution model and all applicable obligations before commercial release; do not assume notarisation resolves licensing. Consider a reproducible minimal LGPL-only build if appropriate, while retaining the required decoding and filtering features. https://ffmpeg.org/legal.html
+2. Review codec patent obligations in the markets where the app will be sold with qualified advice. The app invokes FFmpeg as a separate executable; legal consequences should be assessed for the actual distribution, not inferred from UI design.
+3. Validate modes against engineer-approved references and difficult real speech/music cues, at matched playback level, then on the hall PA. Current presets are conservative starting points and are not calibrated against the user's reference library yet.
+4. Run a release matrix across supported Macs/macOS versions, external-drive disconnection, multi-hour files, low disk space, variable-frame-rate video, AAC edge cases, subtitles, malformed files and accessibility/keyboard-only workflows. Current verification is on this Apple silicon Mac and synthetic fixtures.
+5. Decide supported input/output formats and explicit support for alternate audio streams and surround mixes. Current input is one mono/stereo stream; output is 48 kHz stereo. Multiple audio streams and surround sources are rejected. Native preview support varies; MKV may process without previewing.
+6. Add a production installer/update strategy, version migration, support/diagnostic export, privacy documentation, purchase/licence flow if required, release notes and tested uninstall/data-retention behaviour. None is implied by this build.
+7. Review export policy for warnings and altered settings. Users can export existing results after settings change; the UI explicitly states that reprocessing is needed to apply new settings. Compression/denoise/EQ cannot guarantee repair of clipping or good sound on every PA.
+
+Verification completed
+• All three modes processed the stereo fixture and produced measured output within 1 LU of the selected -23 LUFS target.
+• Optional filter chain, WAV, FLAC, AAC/M4A, mono-to-stereo, and AAC/video output executed successfully.
+• Compressed video bitstream preserved byte-for-byte in the video test.
+• Original source hash unchanged after processing.
+• Silence, missing sources and multiple audio streams produce explicit errors.
+• Cancellation returned promptly without leaving a completed output.
+• Queue continues after a failed cue; settings changes flag an existing result.
+• Queue, results, presets and settings restored in an isolated session test.
+• Export rejects source overwrite; atomic copy/replacement passed; removing a cue preserves its source.
+
+Dependency provenance is recorded in Third-party notices. Source/ contains the implementation and build script.
+
+0.3 cleanup update
+• Added RNNoise speech denoising, restricted to Voice mode, and adjustable dry/wet strength. This is not equivalent to Auphonic's proprietary models.
+• Added steady-noise floor/tracking controls and manual 50/60 Hz hum notches with three additional harmonics.
+• Existing 0.2 presets and sessions decode with backward-compatible defaults.
+• RNNoise frame latency/padding compensated. Exact duration tested on a non-frame-aligned speech fixture.
+• Synthetic speech/noise test demonstrated background attenuation; this does not establish quality on venue content.
+• Hum test measured ~12 dB cut at 50 Hz and <0.1 dB change at 1 kHz.
+• Include the model's upstream BSD notice and pinned provenance with distributions; review model provenance and all engine obligations as part of release review.
+• Dedicated reverb reduction, breath removal, and source separation remain unimplemented.
+
+0.4 filtering update
+Added dynamic three-band voice EQ (not speaker-specific AutoEQ), low-frequency plosive attenuation, optional autoregressive declipping, and high-shelf brightness. All are off by default. Voice-specific filters are blocked for mixed/music cues. Existing settings decode with the new enhancement controls off. Harshness-control gain calibration corrected; sub-2 dB old settings migrate to 2 dB.
+No codec-artifact reconstruction, bandwidth extension, Studio Voice or speaker identification. These features require separate suitable models and validation. Clipping repair performance and artifacts need testing on real recordings before release.
+
+0.4 checks: settings roundtrip and mode restrictions, invalid-value rejection, full speech rendering (-23.11 LUFS against -23 target), unchanged video bitstream, exact sample counts for individual enhancement filters, and queue/export regression checks passed. A 70 Hz test tone measured about -3.74 dB with a 4 dB plosive limit. The clipped sine test's selected harmonic distortion ratio fell from about 0.205 to 0.017; this synthetic result does not establish real-world repair quality.
+
+0.5 leveling update
+Added local Dynamic Audio Normalizer-based leveling before compression and final loudness normalisation, with linked channels, gentle/balanced/strong settings, maximum lift, smoothing and quiet-frame threshold. No speaker/music classifier, noise recognition or automatic ducking. Old settings decode with leveling off. New mixed/voice presets enable it; music leaves it off. Validate on engineer-approved hall cues before commercial release.
+
+0.5 verification: the synthetic quiet/loud/pause fixture showed approximately 6.1/8.9/11.5 dB gap reduction for Gentle/Balanced/Strong. Maximum lift remained within its configured cap; the quiet test pause received no extra gain. Stereo ratio and exact sample count were preserved. Final audio measured -22.99 LUFS and video -23.03 LUFS for a -23 target. Video picture bitstream, settings migration, mode defaults, queue recovery, and export protections passed. These are synthetic checks; real cue/PA validation is still required.
+
+0.6 local video delivery
+Added paired video/WAV output with source-based PCM rendering, independent measurements, individual and batch export, and companion-aware session recovery and reports. Audio inputs safely fall back to a single WAV.
+Verification: paired rendering and measurements, audio-only fallback, unchanged compressed video bitstream, 48 kHz stereo 24-bit WAV, saved-session recovery, missing-companion warning, and cancellation cleanup passed. Broader real-world format and venue validation remains outstanding.

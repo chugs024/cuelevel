@@ -1,0 +1,12 @@
+CUELEVEL ICON — 0.7 (10 October 2026)
+Hand-built vector design: CueLevel-icon.svg is the master; CueLevel-icon.png (1024 px) and CueLevel.icns are exported from it.
+
+Concept: a "C" drawn as a loudness-meter arc (teal → lime → amber, the colours of a meter rising toward its limit),
+three equal bars inside for levelled audio, and a dot in the opening for the cue point.
+Graphite tile on the macOS icon grid: 824 px body with ~186 px corners on a 1024 canvas, soft drop shadow, no text.
+Checked for legibility at 128, 64, 32 and 16 px on light and dark backgrounds.
+
+The previous AI-generated icon and its prompt are kept in work/v07-backup/Assets.
+CueLevel.icns was packaged with Pillow (32–1024 px representations). For a release, regenerate it on the Mac
+with iconutil from an .iconset exported from the SVG, so every size including 16 px @1x is present.
+The signed 0.6.0 app keeps its old icon until the app is rebuilt.

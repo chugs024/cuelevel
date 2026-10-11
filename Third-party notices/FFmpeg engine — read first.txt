@@ -1,0 +1,19 @@
+CUELEVEL AUDIO ENGINE (FFMPEG) — WHICH NOTICE APPLIES
+
+CueLevel runs FFmpeg as a separate program inside the app (Contents/Resources/ffmpeg) for decoding, measuring,
+filtering and writing audio. It never encodes video; picture streams are copied unchanged.
+
+Release builds (1.0 and later, made with release.command after build-ffmpeg-lgpl.command)
+• FFmpeg 7.1 built from the official source release with --disable-gpl --disable-nonfree and no external libraries.
+  Licence: GNU Lesser General Public License 2.1 or later — see "FFmpeg LGPL-2.1 licence.txt".
+• Exact build configuration: Engine/BUILD.txt (also printed by `ffmpeg -buildconf`).
+• Corresponding source: https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz (SHA-256 in Engine/ffmpeg-7.1.tar.xz.sha256).
+  The same archive is kept with the build in Engine/ so it can be supplied on request or alongside downloads.
+• FFmpeg is the work of the FFmpeg developers (https://ffmpeg.org). CueLevel is not affiliated with or endorsed by them.
+
+Development builds and CueLevel 0.6 and earlier
+• Used the imageio-ffmpeg 0.6.0 binary, which enables GPL components. See "FFmpeg build and license.txt",
+  "Provenance.txt" and "imageio-ffmpeg LICENSE.txt". Do not distribute that binary commercially without meeting the GPL.
+
+Speech denoiser model: RNNoise (BSD licence) — see "RNNoise LICENSE.txt" and "RNNoise provenance.txt".
+This file describes the software's components; it is not legal advice.

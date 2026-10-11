@@ -1,0 +1,121 @@
+{
+  "id": "9e806037dc97b8a4",
+  "name": "Cue 24B_Sayukta 2.wav",
+  "sha256": "9e806037dc97b8a432ef9eeefa0fe63b7733dd3df5d7ad6d209ab6d73484ffaf",
+  "bytes": 6407824,
+  "category": "Voice",
+  "category_status": "confirmed from user description",
+  "approved_by_user_as_reference": true,
+  "distribution_rights": "not granted; local reference use only",
+  "source_format": "pcm_s24le ([1][0][0][0] / 0x0001), 48000 Hz, mono, s32 (24 bit), 1152 kb/s",
+  "duration_seconds": 44.373333,
+  "native": {
+    "integrated_lufs": -30.27,
+    "true_peak_dbtp": -9.6,
+    "loudness_range_lu": 7.0
+  },
+  "cuelevel_stereo": {
+    "integrated_lufs": -30.27,
+    "true_peak_dbtp": -12.61,
+    "loudness_range_lu": 7.0
+  },
+  "stereo_measurement_method": "FFmpeg aformat=channel_layouts=stereo; same channel conversion as CueLevel",
+  "sample_peak_dbfs": -12.616,
+  "crest_factor_db": 21.946,
+  "left_rms_dbfs": -34.562,
+  "right_rms_dbfs": -34.562,
+  "uncentred_stereo_correlation": 1.0,
+  "samples_at_or_above_full_scale": 0,
+  "spectrum": [
+    {
+      "low_hz": 20,
+      "high_hz": 80,
+      "power_fraction": 0.010374
+    },
+    {
+      "low_hz": 80,
+      "high_hz": 250,
+      "power_fraction": 0.385143
+    },
+    {
+      "low_hz": 250,
+      "high_hz": 1000,
+      "power_fraction": 0.485832
+    },
+    {
+      "low_hz": 1000,
+      "high_hz": 2500,
+      "power_fraction": 0.064009
+    },
+    {
+      "low_hz": 2500,
+      "high_hz": 6000,
+      "power_fraction": 0.034122
+    },
+    {
+      "low_hz": 6000,
+      "high_hz": 12000,
+      "power_fraction": 0.019698
+    },
+    {
+      "low_hz": 12000,
+      "high_hz": 20000,
+      "power_fraction": 0.000821
+    }
+  ],
+  "timeline_1s_rms_dbfs": [
+    -36.699,
+    -64.511,
+    -27.648,
+    -41.194,
+    -35.315,
+    -39.378,
+    -36.621,
+    -59.678,
+    -32.714,
+    -31.012,
+    -52.868,
+    -30.068,
+    -40.598,
+    -34.165,
+    -37.794,
+    -39.66,
+    -36.959,
+    -39.96,
+    -40.049,
+    -32.773,
+    -34.787,
+    -29.649,
+    -41.296,
+    -35.124,
+    -44.538,
+    -35.522,
+    -46.737,
+    -27.862,
+    -38.013,
+    -34.894,
+    -42.81,
+    -40.62,
+    -34.611,
+    -30.569,
+    -62.863,
+    -35.99,
+    -31.507,
+    -29.47,
+    -42.964,
+    -35.005,
+    -35.572,
+    -36.245,
+    -36.338,
+    -41.224
+  ],
+  "calibration_status": "Content classified; intended relative playback level still unconfirmed",
+  "within_current_target_control_range": false,
+  "eligible_for_automatic_default": false,
+  "review_notes": [
+    "Measured loudness is outside current CueLevel target range (-30 to -12 LUFS); exact target cannot be adopted by the existing reference button.",
+    "Mono source: native and CueLevel stereo-conversion measurements retained separately. Confirm the playback system mono routing before venue calibration."
+  ],
+  "content_description": "Talking",
+  "classification_basis": "the next three are talking"
+}

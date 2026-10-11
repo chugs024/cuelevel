@@ -1,0 +1,136 @@
+{
+  "id": "71474afeef34e3bb",
+  "name": "Cue 18B_Balak 2.wav",
+  "sha256": "71474afeef34e3bb041a6cda55c45f8867f8fd1607f032e55195a28d29949261",
+  "bytes": 8773400,
+  "category": "Voice",
+  "category_status": "confirmed from user description",
+  "approved_by_user_as_reference": true,
+  "distribution_rights": "not granted; local reference use only",
+  "source_format": "pcm_s24le ([1][0][0][0] / 0x0001), 48000 Hz, mono, s32 (24 bit), 1152 kb/s",
+  "duration_seconds": 60.757333,
+  "native": {
+    "integrated_lufs": -28.51,
+    "true_peak_dbtp": -8.55,
+    "loudness_range_lu": 6.7
+  },
+  "cuelevel_stereo": {
+    "integrated_lufs": -28.51,
+    "true_peak_dbtp": -11.56,
+    "loudness_range_lu": 6.7
+  },
+  "stereo_measurement_method": "FFmpeg aformat=channel_layouts=stereo; same channel conversion as CueLevel",
+  "sample_peak_dbfs": -11.604,
+  "crest_factor_db": 20.646,
+  "left_rms_dbfs": -32.25,
+  "right_rms_dbfs": -32.25,
+  "uncentred_stereo_correlation": 1.0,
+  "samples_at_or_above_full_scale": 0,
+  "spectrum": [
+    {
+      "low_hz": 20,
+      "high_hz": 80,
+      "power_fraction": 0.001552
+    },
+    {
+      "low_hz": 80,
+      "high_hz": 250,
+      "power_fraction": 0.110532
+    },
+    {
+      "low_hz": 250,
+      "high_hz": 1000,
+      "power_fraction": 0.805838
+    },
+    {
+      "low_hz": 1000,
+      "high_hz": 2500,
+      "power_fraction": 0.070825
+    },
+    {
+      "low_hz": 2500,
+      "high_hz": 6000,
+      "power_fraction": 0.008061
+    },
+    {
+      "low_hz": 6000,
+      "high_hz": 12000,
+      "power_fraction": 0.002565
+    },
+    {
+      "low_hz": 12000,
+      "high_hz": 20000,
+      "power_fraction": 0.000627
+    }
+  ],
+  "timeline_1s_rms_dbfs": [
+    -40.673,
+    -34.483,
+    -34.365,
+    -33.186,
+    -29.756,
+    -37.186,
+    -43.508,
+    -26.805,
+    -33.987,
+    -30.876,
+    -43.841,
+    -31.183,
+    -35.368,
+    -28.582,
+    -29.347,
+    -31.355,
+    -31.057,
+    -26.303,
+    -34.324,
+    -24.79,
+    -34.429,
+    -44.829,
+    -35.134,
+    -29.949,
+    -36.121,
+    -29.501,
+    -35.188,
+    -44.909,
+    -34.941,
+    -31.579,
+    -30.912,
+    -29.215,
+    -28.473,
+    -34.28,
+    -33.534,
+    -38.645,
+    -49.494,
+    -32.939,
+    -32.816,
+    -32.804,
+    -30.587,
+    -31.36,
+    -37.041,
+    -31.483,
+    -35.692,
+    -31.07,
+    -33.918,
+    -60.189,
+    -32.013,
+    -31.386,
+    -32.391,
+    -36.333,
+    -31.058,
+    -41.101,
+    -34.405,
+    -37.097,
+    -34.112,
+    -77.414,
+    -33.834,
+    -34.612
+  ],
+  "calibration_status": "Content classified; intended relative playback level still unconfirmed",
+  "within_current_target_control_range": true,
+  "eligible_for_automatic_default": false,
+  "review_notes": [
+    "Mono source: native and CueLevel stereo-conversion measurements retained separately. Confirm the playback system mono routing before venue calibration."
+  ],
+  "content_description": "Talking",
+  "classification_basis": "the next three are talking"
+}

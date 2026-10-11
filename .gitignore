@@ -1,0 +1,12 @@
+# Build products and engines (never commit binaries)
+Engine/
+build/
+*.dmg
+*.app/
+*.zip
+# Reference recordings are never distributed; only their measurements live here
+Reference Audio/
+*.wav
+*.mov
+*.mp4
+.DS_Store

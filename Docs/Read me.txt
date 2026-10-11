@@ -1,0 +1,70 @@
+CUELEVEL 1.1
+Lossless loudness levelling for event playback
+
+Requires an Apple silicon Mac with macOS 13 or later.
+
+INSTALL
+Open the CueLevel DMG and drag CueLevel into Applications. Quit any older version before replacing it.
+
+THE FAST WAY: QUICK LEVEL
+1. In the right-hand panel, switch on Quick Level and choose an output folder (for example on your show drive).
+2. Drop audio or video files anywhere in the window.
+3. Each file is measured, levelled to the target (−18 LUFS by default) and saved into the output folder under its own
+   name. No dialogs. Originals are never changed, and existing files are never overwritten ("Cue 12 2.mov").
+4. After each batch, "CueLevel Report.csv" and "CueLevel Report.html" in the output folder list every cue: loudness
+   before and after, gain applied, and anything that needs attention.
+
+What "lossless" means here
+• Video: the picture, subtitles, chapters, metadata and timecode are copied untouched (bit-for-bit).
+• Audio: one exact volume change, stored uncompressed (24-bit PCM, or 32-bit float for float sources) at the
+  original sample rate. Nothing is compressed, resampled, limited or re-encoded.
+• MP4, MOV and M4V videos are saved as MOV, because MP4 cannot carry uncompressed audio. Other video containers stay
+  MKV (Resolume may not open MKV, so prefer MOV or MP4 sources). Audio files are saved as WAV.
+• Extra audio tracks in a video are copied untouched; the first track is the one levelled.
+• If reaching the target would push the loudest peak above the ceiling (−1 dBTP), the cue is kept quieter instead and
+  the report says by how much. To reach the target anyway, tick "Allow peak limiting" and choose the most limiting you
+  accept (1–6 dB); only those peaks are altered.
+
+WATCH FOLDER
+Switch on Watch folder and choose a folder (it must differ from the output folder). Files saved into it afterwards are
+added automatically once they have finished copying, and levelled when Quick Level is on. Files already in the folder
+when you start watching are left alone.
+
+DETAILED WORK: REVIEW, PROCESSING AND REFERENCES
+• Add Files or drop files with Quick Level off to review them one by one. Analyse measures loudness, true peak,
+  loudness range and peak-to-average ratio, draws the waveform with short-term loudness over time, and runs
+  source checks (clipping, DC offset, out-of-phase stereo, silence at the start or end, surround, extra tracks).
+• Choose Audio only, Audio + voice or Voice. Other output types (WAV, FLAC, M4A, video with AAC, Video + WAV copy)
+  enable the full processing chain: automatic leveler, peak compression, noise and hum reduction, de-essing,
+  harshness control and voice filters. These change the sound by design and are not lossless.
+• Original / Processed with Match loudness compares the two at equal loudness.
+• Standards menu: Live venue −18, EBU R128 −23, ATSC −24, online video −16, music streaming −14 LUFS.
+• Reference library: import your approved references (measurements only). Each analysed cue is compared with the
+  references for its content type and given a recommendation — Preserve (gain only) or Gentle correction.
+  "Apply each cue's recommendation" does this automatically during batch processing.
+• Show Report… saves the CSV and printable HTML report for the current queue at any time.
+• Presets, the queue, settings and results are kept between launches in ~/Library/Application Support/CueLevel.
+  Removing a cue removes only CueLevel's cached copy.
+
+WHAT CUELEVEL DOES NOT DO
+Set the audience volume (that stays at the desk), correct the room, repair existing distortion, separate speech from
+music, or remove reverb. Surround sources are downmixed to stereo, which is not lossless.
+
+BUILD YOUR REFERENCE CATALOGUE
+When a cue sounds right on the PA, select it and choose "Add as an approved reference…" (below the reference checks).
+Pick its content type and add a note if you like. CueLevel keeps the cue's measurements (loudness, range, peaks,
+peak-to-average ratio, stereo correlation) and a fingerprint of the file, never the recording. Every later cue is
+compared with the range of your approved references for its content type. Adding the same file again replaces its entry;
+remove entries under References → Catalogue.
+
+UPDATES
+CueLevel checks for new versions at launch and twice a day, and offers "Install and reopen" when one is ready. Updates
+are installed only if they match the published checksum, are signed by CueLevel's developer and pass macOS Gatekeeper.
+Turn automatic checks off in About CueLevel; CueLevel → Check for Updates… checks on demand.
+
+PRIVACY
+All processing happens on this Mac. CueLevel never uploads your files and collects no data. When update checks are on,
+it reads one small public version file on GitHub; nothing about you or your files is sent.
+
+Third-party components and licences are listed in the Third-party notices folder inside the app
+(CueLevel.app/Contents/Resources/Third-party notices).

@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "mode_mapping_note": "Singing and bhajan map to the music-preserving Audio only mode. Audio + voice means spoken dialogue mixed with music, not singing. Content labels do not authorize automatic noise removal or EQ.",
+  "by_source_sha256": {
+    "bb0a00a3ead39b51763e4a62f4963b72a4836b6448622d98c5b94fa7b6d37285": {
+      "category": "Audio only",
+      "category_status": "confirmed from user description",
+      "content_description": "Singing with music",
+      "classification_basis": "aarti is singing with music",
+      "calibration_status": "Content classified; intended relative playback level still unconfirmed",
+      "eligible_for_automatic_default": false
+    },
+    "c3e9fad0497062770dc8012e04fc82e491801aaad2941a4283206f498037472f": {
+      "category": "Audio only",
+      "category_status": "confirmed from user description",
+      "content_description": "Bhajan",
+      "classification_basis": "bal geet is bhajan",
+      "calibration_status": "Content classified; intended relative playback level still unconfirmed",
+      "eligible_for_automatic_default": false
+    },
+    "9e806037dc97b8a432ef9eeefa0fe63b7733dd3df5d7ad6d209ab6d73484ffaf": {
+      "category": "Voice",
+      "category_status": "confirmed from user description",
+      "content_description": "Talking",
+      "classification_basis": "the next three are talking",
+      "calibration_status": "Content classified; intended relative playback level still unconfirmed",
+      "eligible_for_automatic_default": false
+    },
+    "71474afeef34e3bb041a6cda55c45f8867f8fd1607f032e55195a28d29949261": {
+      "category": "Voice",
+      "category_status": "confirmed from user description",
+      "content_description": "Talking",
+      "classification_basis": "the next three are talking",
+      "calibration_status": "Content classified; intended relative playback level still unconfirmed",
+      "eligible_for_automatic_default": false
+    },
+    "81e9479ecc6fab10bba0b6b348a2dc031b1518c83db14f5fe19fd3b3674fddfb": {
+      "category": "Voice",
+      "category_status": "confirmed from user description",
+      "content_description": "Talking",
+      "classification_basis": "the next three are talking",
+      "calibration_status": "Content classified; intended relative playback level still unconfirmed",
+      "eligible_for_automatic_default": false
+    },
+    "69e9d055fb5996c2e366436fc83f5322779a321b87b87dbe082662994aa809fa": {
+      "category": "Voice",
+      "category_status": "confirmed from user description",
+      "content_description": "Talking",
+      "classification_basis": "act 1 scene 1 is talking",
+      "calibration_status": "Content classified; intended relative playback level still unconfirmed",
+      "eligible_for_automatic_default": false
+    }
+  }
+}

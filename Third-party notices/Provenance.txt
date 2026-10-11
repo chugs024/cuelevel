@@ -1,0 +1,5 @@
+FFmpeg 7.1 arm64 binary obtained from the imageio-ffmpeg 0.6.0 macOS arm64 wheel on PyPI. The binary reports GPL version 2 or later. See the included build configuration and license notice.
+Package: https://pypi.org/project/imageio-ffmpeg/0.6.0/
+Build project: https://github.com/imageio/imageio-ffmpeg
+FFmpeg source release: https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz
+This folder is a local development prototype. Before public redistribution, arrange the corresponding FFmpeg and enabled-library source and applicable notices for the exact binary, and review distribution requirements.

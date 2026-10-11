@@ -1,0 +1,133 @@
+CUELEVEL 0.7.0 (DEVELOPMENT) — REFERENCE-GUIDED CONSERVATIVE MASTERING
+10 October 2026. Work in progress; not a release. The signed/notarised 0.6.0 app and DMGs are unchanged.
+
+WHAT CHANGED
+1. Reference library in the app (Source/ReferenceLibrary.swift)
+   • Import Library… copies library.json and annotations.json into the app's own data folder. Recordings are never copied.
+   • Confirmed labels in annotations.json (keyed by SHA-256) take precedence over library.json.
+   • References are grouped by content type and summarised as ranges (lowest to highest). Nothing is averaged.
+     Reference true peaks are never used as an output ceiling.
+2. Reference check, shown under the loudness report for every analysed cue
+   • Compares the cue with the references for the selected content type: loudness range, peak-to-average ratio
+     (crest), source loudness, and the true peak a fixed gain change to the target would produce.
+   • Recommends one of two approaches. It never applies them by itself; "Apply to Settings" does, and only after the
+     changes are listed.
+     - Preserve: dynamics already sit within the references. Leveler and compression off, range target 20 LU,
+       so the output differs from the source by one fixed gain change.
+     - Gentle correction: only what falls outside the references is corrected.
+         Loudness range more than 1 LU wider than the widest reference → Gentle leveler (Balanced if over 3 LU beyond).
+         Audio only is never leveled automatically; a wide music range is flagged as possibly intentional.
+         Crest more than 3 dB above the most dynamic reference → peak compression at or below the mode's ratio.
+   • Only leveler, compression, range target and working level change. Target, ceiling, output format, content type,
+     cleanup (denoise, hum) and tone (rumble, de-ess, harshness, EQ, brightness, declip) stay as the user set them.
+   • No Audio + voice references exist yet, so that content type gets a comparison message and no recommendation.
+3. Level-independent dynamics (Advanced → "Level-independent dynamics", working level −18 LUFS by default)
+   • A fixed gain places the cue at the working level before the leveler, compressor and other level-triggered
+     stages; the final loudness pass removes it. Off (nil) for existing settings and presets, so 0.6 chains are unchanged.
+   • Recommendations always turn it on.
+4. Final-stage transparency
+   • The render now records whether loudnorm used one fixed gain ("linear") or fell back to dynamic loudness control,
+     for the main output and the WAV copy. Dynamic fallback produces a review note; reports include it.
+   • Bug fix: a measured loudness range of exactly 0 LU was passed to loudnorm, which reads 0 as "not supplied" and
+     silently switched to dynamic mode. This affects steady material longer than 3 s (tones, very constant loops).
+     Now passed as 0.01 LU. Cues shorter than 3 s were not affected.
+5. Measurements: sample peak and RMS (astats) are measured with loudness, giving a peak-to-average row in the report.
+   Sessions from 0.6 decode unchanged; their analyses show "analyse again" for crest.
+6. Reports add finalGainMode and the reference-check lines. The version comes from the app bundle.
+7. Builds: Source/build-dev.command builds outputs/CueLevel-dev/CueLevel Dev.app (0.7.0 build 8, bundle id
+   local.halllevel.app.dev, data in ~/Library/Application Support/CueLevel Development). It never modifies the
+   signed app or the installed app's session. build.command now includes ReferenceLibrary.swift and still
+   replaces the signed app; use it only for a release build.
+
+EVIDENCE BEHIND THE DESIGN (FFmpeg simulation of the exact 0.6 filter chains on the six approved references, −23 LUFS / −2 dBTP)
+                         Mode defaults                          Fixed gain only
+   Arti (music)          crest +1.7 dB, LRA 2.9→2.5              unchanged, linear
+   Bal Geet (music)      crest +0.8 dB, LRA 4.0→3.4              unchanged, linear
+   Sayukta (voice)       final stage fell back to DYNAMIC        unchanged, linear
+   Balak / Kishore       crest −0.9 / −0.8 dB                    unchanged, linear
+   Act 1 Scene 1         LRA 6.5→3.9, crest −1.7 dB              unchanged, linear (−2.94 dBTP)
+ Approved, finished references were altered by the 0.6 mode defaults. All six reach −23 LUFS with one fixed gain.
+
+ 0.6 leveler on a speech cue with a 12 dB step (Kishore, first 45 s at −12 dB; LRA 16.9 LU):
+   Balanced leveler at source level: LRA 16.6 (almost no effect; quiet dialogue is below every threshold, so both
+   halves get the same capped lift). With a −18 LUFS working level: LRA 8.6, final stage linear.
+ Spiky speech (Balak + 4 ms clicks, crest 28.2 dB): compression barely changes the spikes (10 ms attack); the final
+   stage falls back to dynamic. A peak limiter needs a product decision (see open questions).
+
+TESTS
+   work/v07-tests/run-tests.command: type-checks the full app, runs the 0.7 tests (library, labels, import safety,
+   six-reference preservation, policy cases, 0.6 compatibility, log parsing, end-to-end engine with bundled FFmpeg,
+   source hashes) and re-runs the 0.6 paired-output regression test.
+   The command strings and fixture behaviour were checked with FFmpeg 6.1 on Linux. Swift compilation and the GUI
+   require macOS/Xcode and are verified only when run on the Mac.
+
+OPEN QUESTIONS (artistic / playback decisions)
+   1. Relative playback level of music versus speech, and the absolute target (Resolume has no per-cue gain).
+   2. When a finished cue cannot reach the target without exceeding the ceiling: limiter (how many dB), quieter output, or dynamic.
+   3. An approved Audio + voice reference, plus problem originals with engineer-approved corrected versions.
+   4. Whether mono dialogue plays centred (dual-mono) through the PA, as the export assumes.
+
+NOT DONE YET
+   Per-cue recommendations during Process Queue (settings are still global), spectral/harshness comparison
+   (the library's band fractions are not yet measured in-app), peak limiter, playback-level presets per content type.
+
+QUICK LEVEL — LOSSLESS DROP WORKFLOW (added 10 October 2026, evening)
+Decisions from the user: one fixed output folder; videos delivered as MOV; no limiting (cues without headroom stay quieter
+and are flagged); every cue levelled to -18 LUFS. Peak ceiling -1 dBTP (safe for a pure gain change).
+
+How it works
+• Inspector → Quick Level switch. First use asks for the output folder (remembered). Turning it on selects
+  "Lossless · gain only", -18 LUFS and -1 dBTP.
+• Drop files anywhere in the window: each is analysed, levelled and copied to the output folder with no dialogs, using the
+  source's base name ("Cue 12.mp4" → "Cue 12.mov"). Existing files are never overwritten ("Cue 12 2.mov"). Files dropped
+  while a batch runs are processed when it finishes. Originals are never modified.
+• Lossless output (OutputFormat.lossless, AudioEngine.processLossless):
+    - Video picture, subtitles, chapters, metadata and timecode are stream-copied (picture packets byte-identical).
+    - MP4/MOV/M4V sources become MOV (MP4 cannot carry uncompressed audio); other video containers stay MKV with a note,
+      because Resolume may not open MKV.
+    - Audio: one exact gain change (FFmpeg volume, double precision). No loudnorm, no resampling, no compression,
+      no limiting. Stored as 24-bit PCM (32-bit float if the source is float) at the source's own sample rate.
+    - Gain = min(target − source loudness, ceiling − source true peak). If the ceiling is the limit, the cue stays
+      quieter by the reported amount.
+    - Leveler, compression, cleanup and tone controls are bypassed in this mode.
+• Evidence (FFmpeg on Linux, exact command lines): MP4 (mpeg4 + AAC 44.1 kHz + timecode) → MOV: picture MD5 identical,
+  timecode kept, pcm_s24le 44.1 kHz, −18.06 LUFS. Peaky cue: gain limited to +2.64 dB, output −24.79 LUFS / −1.00 dBTP,
+  flagged. A +6.0206 dB gain on a 24-bit WAV produced exactly 2× every sample; 0 dB is bit-identical.
+• Compared with 0.6: 0.6 kept the picture identical too, but re-encoded video soundtracks to AAC 320 kbps and resampled
+  everything to 48 kHz; its loudnorm final stage was ~116 dB below a perfect gain change (transparent, not bit-exact).
+• Check on the venue system: MOV files carry 24-bit PCM tagged "in24" (standard QuickTime). Confirm Resolume plays a
+  levelled MOV and WAV before converting a whole show.
+
+GAP ANALYSIS AGAINST ESTABLISHED LEVELLING TOOLS (Auphonic, iZotope RX Loudness Control, NUGEN LM-Correct,
+Adobe Audition Match Loudness)
+Now covered: drag-and-drop batch, integrated/true-peak/range/crest measurement, lossless gain-only levelling, two-pass
+normalisation, leveler, compression, noise/hum/de-ess/EQ, matched-loudness A/B, presets, JSON reports, reference library.
+Still missing, roughly in order of value for this venue:
+ 1. Show report: one CSV/PDF for the whole batch (in/out loudness, gain, shortfall, notes) to keep with the show files.
+ 2. Watch folder: process anything saved into a chosen folder, not only drag-and-drop.
+ 3. Optional transparent true-peak limiter for cues that come out quieter (deliberately off by user choice).
+ 4. Per-cue automatic decisions in non-lossless batches (reference recommendation per cue; speech/music detection).
+ 5. Loudness-over-time graph (short-term/momentary) in the review pane.
+ 6. Loudness standard presets (EBU R128 −23, ATSC −24, streaming −14/−16, custom venue).
+ 7. Source checks: clipping, DC offset, mono/phase compatibility, head/tail silence, sample-rate/bit-depth summary.
+ 8. Multi-channel/surround and multiple audio tracks (rejected today).
+ 9. Commercial release items already listed in Release readiness.txt (FFmpeg licensing, updater, payments, support).
+
+1.0 RELEASE CANDIDATE (10 October 2026, late evening)
+Built every gap from the list above except commercial storefront/updater (business decisions). See Release readiness.txt.
+• Watch folder (2 s polling, adds files once their size is stable; ignores files present at start; refuses the output folder).
+• Show report: CueLevel Report.csv + printable .html, auto-written to the Quick Level folder after each batch and via Show Report….
+• Optional peak limiter for lossless mode (off by default; 1–6 dB cap; 4× oversampled alimiter, length preserved).
+• Per-cue reference recommendations during batch processing (non-lossless modes).
+• Loudness-over-time: ebur128 short-term curve for source and output, drawn over the waveform with the target line.
+• Loudness standards menu (−18 venue, −23 EBU, −24 ATSC, −16 online, −14 streaming).
+• Source checks: probable clipping (astats peak count), DC offset, out-of-phase/dual-mono stereo, head/tail silence,
+  surround, extra tracks. Waveform pass now decodes stereo to compute correlation and silence.
+• Surround accepted (downmixed, flagged). Multiple audio tracks accepted; lossless mode copies extra tracks untouched.
+• Lossless output puts video first, then the levelled track, then untouched extra tracks.
+• Version 1.0.0 (9); teal accent from the icon; About states the no-network privacy position.
+• Licensing: FFmpeg 7.1 built here with --disable-gpl contains every component CueLevel uses (checked filter by filter).
+  build-ffmpeg-lgpl.command reproduces that on the Mac; release.command bundles it and swaps the notices.
+• release.command: tests → build → Developer ID sign → notarise+staple app → DMG → notarise+staple DMG → Gatekeeper checks.
+Verification here: every FFmpeg command line was replayed on FFmpeg 6.1 and on an FFmpeg 7.1 LGPL build (same family as the
+shipped engine). Swift compilation, the GUI, signing and notarisation can only be verified on the Mac.
