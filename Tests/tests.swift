@@ -353,7 +353,7 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let half = GainRegion(start: 2, end: 4, gain: -6.0206, fadeIn: 0.5, fadeOut: 0.5)
         check(near(ClipGain.multiplier(at: 3, regions: [half]), 0.5, 0.001) && ClipGain.multiplier(at: 1, regions: [half]) == 1 && near(ClipGain.multiplier(at: 2.25, regions: [half]), 0.75, 0.001), "envelope with fades")
         check(ClipGain.filter([GainRegion(start: 0, end: 1, gain: 0)]) == nil && ClipGain.filter(nil) == nil, "no filter when nothing changes")
-        check(ClipGain.filter([half])!.hasPrefix("aeval=exprs='val(ch)*max(0,1+") && !ClipGain.filter([half])!.contains("T-"), "filter uses the sample index")
+        check(ClipGain.filter([half])!.hasPrefix("aeval=exprs='val(ch)*max(0,(1+") && !ClipGain.filter([half])!.contains("T-"), "filter uses the sample index")
         check(ClipGain.matchGain(reference: -20, section: -26.04) == 6 && ClipGain.matchGain(reference: -10, section: -60) == 24, "match gain clamped")
         let speechLike = try make("sections.wav", ["-f","lavfi","-i","sine=frequency=330:sample_rate=48000:duration=8","-af","volume=-16dB","-ac","2","-c:a","pcm_s24le"])
         let sectionsAnalysis = try AudioEngine.analyze(speechLike, token: Cancellation()) { _, _ in }
