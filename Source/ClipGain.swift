@@ -117,6 +117,75 @@ extension ClipGain {
     }
 }
 
+extension ClipGain {
+    /// Even out keeps each stretch within this many dB of the cue's typical level.
+    static let evenOutTolerance = 2.0
+    static let evenOutMaxCut = 18.0
+    static let evenOutMaxBoost = 9.0
+
+    /// Finds stretches whose loudness sits clearly above or below the cue's typical level and returns sections that bring
+    /// them back. `momentary` holds 400 ms loudness readings every 100 ms. Pauses are ignored when judging a stretch, and
+    /// fades sit in the quiet around it. Sections never overlap `avoiding` (sections drawn by hand).
+    static func evenOut(momentary m: [Double], duration: Double, tolerance: Double = evenOutTolerance, avoiding: [GainRegion] = []) -> [GainRegion] {
+        let step = 0.1
+        guard m.count > 20 else { return [] }
+        func energy(_ v: Double) -> Double { pow(10, v / 10) }
+        func level(_ e: Double) -> Double { 10 * log10(max(e, 1e-12)) }
+        func median(_ values: [Double]) -> Double? { let s = values.sorted(); return s.isEmpty ? nil : s[s.count / 2] }
+        // Gate out silence, then pauses relative to the typical level.
+        guard let rough = median(m.filter { $0 > -50 }) else { return [] }
+        let active = m.map { $0 > -50 && $0 > rough - 15 }
+        guard let reference = median(zip(m, active).filter { $0.1 }.map { $0.0 }) else { return [] }
+        // Phrase loudness: energy mean of active readings within ±0.75 s.
+        let radius = 7
+        var phrase = [Double?](repeating: nil, count: m.count)
+        for i in m.indices where active[i] {
+            var sum = 0.0, n = 0
+            for j in max(0, i - radius)...min(m.count - 1, i + radius) where active[j] { sum += energy(m[j]); n += 1 }
+            phrase[i] = n > 0 ? level(sum / Double(n)) : nil
+        }
+        // Runs of the same direction beyond the tolerance; pauses shorter than 0.8 s don't end a run.
+        struct Run { var sign: Int; var first: Int; var last: Int; var activeFrames: [Int] }
+        var runs: [Run] = []
+        var current: Run?
+        var gap = 0
+        func close() { if let r = current, Double(r.activeFrames.count) * step >= 1.0 { runs.append(r) }; current = nil; gap = 0 }
+        for i in m.indices {
+            guard active[i], let p = phrase[i] else {
+                if current != nil { gap += 1; if Double(gap) * step > 0.8 { close() } }
+                continue
+            }
+            let d = p - reference
+            let sign = d > tolerance ? 1 : (d < -tolerance ? -1 : 0)
+            if sign == 0 { close(); continue }
+            if var r = current, r.sign == sign { r.last = i; r.activeFrames.append(i); current = r; gap = 0 }
+            else { close(); current = Run(sign: sign, first: i, last: i, activeFrames: [i]) }
+        }
+        close()
+        // One section per run: the gain that brings the run's loudness to the reference, with fades in the surrounding quiet.
+        var result: [GainRegion] = []
+        for r in runs {
+            // Trim to readings that themselves sit beyond the tolerance (the smoothing spreads a stretch's edges).
+            let core = r.activeFrames.filter { Double(r.sign) * (m[$0] - reference) > tolerance }
+            guard let first = core.first, let last = core.last, let loudness = median(core.map { m[$0] }) else { continue }
+            var gain = ((reference - loudness) * 2).rounded() / 2
+            gain = min(evenOutMaxBoost, max(-evenOutMaxCut, gain))
+            guard abs(gain) >= tolerance * 0.75 else { continue }
+            // Readings mark the end of a 400 ms window: the stretch starts about one reading before the first and ends
+            // about 0.35 s before the last. Fades sit just outside it.
+            let start = max(0, Double(first) * step - 0.15), end = min(duration, Double(last + 1) * step - 0.15)
+            var region = GainRegion(start: start, end: end, gain: gain, fadeIn: 0.15, fadeOut: 0.2)
+            region.isAuto = true
+            region = region.normalized(duration: duration)
+            // Back-to-back stretches: start this one where the previous one ends.
+            if let previous = result.last, previous.end > region.start { region.start = previous.end; region = region.normalized(duration: duration) }
+            guard region.length >= 0.5 else { continue }
+            if !avoiding.contains(where: { $0.start < region.end && region.start < $0.end }) { result.append(region) }
+        }
+        return result
+    }
+}
+
 /// Undo history for clip gain edits (one step per finished drag or button press).
 struct EditHistory<State: Equatable> {
     private(set) var undoStack: [State] = []
