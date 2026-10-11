@@ -1,4 +1,4 @@
-CUELEVEL 1.2
+CUELEVEL 1.3
 Lossless loudness levelling for event playback
 
 Requires an Apple silicon Mac with macOS 13 or later.
@@ -55,8 +55,11 @@ Select a cue and click "Clip gain" above the waveform. Drag across the waveform 
 line up or down to raise or lower just that section (±24 dB). Drag the orange squares at the top to set the fade-in and
 fade-out lengths, and drag the lower part of a section's edge to resize it. To even out speakers: select a stretch that
 sounds right and click "Sounds right", then select a quiet or loud stretch and click "Match"; CueLevel measures both
-and sets the gain so they are equally loud. Click "Level again" to render. The levelled output includes the edits and
-replaces the normal output. Clip gain is volume only (no compression or EQ); the rest of the cue is untouched.
+and sets the gain so they are equally loud. The fader on the right shows and sets the selected section's level
+(drag, Shift for fine, double-click for 0 dB); ↑/↓ nudge 0.5 dB and Shift-↑/↓ 3 dB. Zoom with Option-scroll, a pinch, the
+magnifier buttons or T/R; scroll to move, or drag in the overview strip. ⌘Z undoes. Playback in the editor includes your
+edits in real time (played a little quieter overall when you boost, so nothing clips). Click "Done editing" to re-level;
+the levelled output includes the edits and replaces the normal output. Clip gain is volume only (no compression or EQ).
 
 BUILD YOUR REFERENCE CATALOGUE
 When a cue sounds right on the PA, select it and choose "Add as an approved reference…" (below the reference checks).
