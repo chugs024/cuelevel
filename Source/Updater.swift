@@ -154,6 +154,8 @@ enum UpdateState: Equatable {
                 do {
                     let destination = Self.installDestination()
                     let staged = try await Task.detached { try Self.verifyAndStage(dmg: dmg, feed: feed, destination: destination) }.value
+                    self.showSheet = false
+                    try await Task.sleep(nanoseconds: 400_000_000)   // let the sheet close before quitting
                     try Self.relaunch(replacing: destination, with: staged, oldVersion: self.currentVersion)
                 } catch {
                     try? FileManager.default.removeItem(at: dmg)
@@ -258,7 +260,12 @@ enum UpdateState: Equatable {
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-c", "nohup /bin/zsh \(shellQuote(file.path)) >/dev/null 2>&1 &"]
         try process.run(); process.waitUntilExit()
-        NSApp.terminate(nil)
+        // An open sheet (this update window) stops NSApp.terminate, which left 1.1.0–1.2.1 waiting forever.
+        // Close every sheet first, then quit; if anything still holds the app open, exit after saving.
+        for window in NSApp.windows { if let sheet = window.attachedSheet { window.endSheet(sheet) } }
+        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+        DispatchQueue.main.async { NSApp.terminate(nil) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { exit(0) }
     }
 
     nonisolated static func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
