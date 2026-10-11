@@ -1088,7 +1088,7 @@ struct LoudnessMeterBar: View {
         HStack(spacing: 12) {
             GeometryReader { geometry in
                 let w = geometry.size.width
-                func x(_ v: Double) -> CGFloat { CGFloat((min(0, max(-40, v)) + 40) / 40) * w }
+                let x: (Double) -> CGFloat = { v in CGFloat((min(0, max(-40, v)) + 40) / 40) * w }
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3).fill(Theme.field)
                     if let m = reading.momentary {
