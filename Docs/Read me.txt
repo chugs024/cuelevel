@@ -1,4 +1,4 @@
-CUELEVEL 1.1
+CUELEVEL 1.2
 Lossless loudness levelling for event playback
 
 Requires an Apple silicon Mac with macOS 13 or later.
@@ -49,6 +49,14 @@ DETAILED WORK: REVIEW, PROCESSING AND REFERENCES
 WHAT CUELEVEL DOES NOT DO
 Set the audience volume (that stays at the desk), correct the room, repair existing distortion, separate speech from
 music, or remove reverb. Surround sources are downmixed to stereo, which is not lossless.
+
+CLIP GAIN (EVEN OUT VOICES)
+Select a cue and click "Clip gain" above the waveform. Drag across the waveform to select a section, then drag its white
+line up or down to raise or lower just that section (±24 dB). Drag the orange squares at the top to set the fade-in and
+fade-out lengths, and drag the lower part of a section's edge to resize it. To even out speakers: select a stretch that
+sounds right and click "Sounds right", then select a quiet or loud stretch and click "Match"; CueLevel measures both
+and sets the gain so they are equally loud. Click "Level again" to render. The levelled output includes the edits and
+replaces the normal output. Clip gain is volume only (no compression or EQ); the rest of the cue is untouched.
 
 BUILD YOUR REFERENCE CATALOGUE
 When a cue sounds right on the PA, select it and choose "Add as an approved reference…" (below the reference checks).
