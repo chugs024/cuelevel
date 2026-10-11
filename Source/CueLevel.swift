@@ -607,6 +607,8 @@ struct ContentView: View {
                     HStack { Text("Level to").sectionTitle(); Spacer(); standardsMenu }
                     valueRow("Target", value: $model.settings.target, range: -30 ... -12, unit: "LUFS")
                     valueRow("Peak ceiling", value: $model.settings.peak, range: -6 ... -1, unit: "dBTP")
+                    Toggle(isOn: $model.evenOut) { Text("Even out loud and quiet stretches").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
+                    Text(model.evenOut ? "Quick Level turns stretches more than 2 dB louder or quieter than the rest back toward it, with short fades. Volume only; edit them under Clip gain. Turn off for music." : "Quick Level applies one gain change to the whole file.").hint()
                 }
                 section {
                     Text("When peaks won't fit").sectionTitle()

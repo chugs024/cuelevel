@@ -54,6 +54,9 @@ struct ClipGainEditor: View {
             Button { model.zoom(by: 2) } label: { Image(systemName: "plus.magnifyingglass") }.buttonStyle(CLButton(kind: .ghost)).help("Zoom in (T)")
             Button("Fit") { model.zoomToFit() }.buttonStyle(CLButton(kind: .ghost)).help("Show the whole cue")
             Button("Section") { model.zoomToSelectedRegion() }.buttonStyle(CLButton(kind: .ghost)).disabled(region == nil).help("Zoom to the selected section")
+            Divider().frame(height: 14)
+            Button { model.evenOutSelected() } label: { Label("Even out", systemImage: "wand.and.rays") }.buttonStyle(CLButton(kind: .ghost)).disabled(model.measuringSection)
+                .help("Find stretches more than 2 dB louder or quieter than the rest and turn them back. Hand-drawn sections are kept.")
             Spacer()
             Text("\(preciseClock(view.start)) – \(preciseClock(view.start + view.length))").monospacedDigit().foregroundStyle(Theme.muted)
             if model.detailWaveform.isEmpty { ProgressView().controlSize(.small).help("Loading the detailed waveform for zooming") }
@@ -341,8 +344,8 @@ struct ClipGainLane: View {
                 context.stroke(guide, with: .color(Theme.amber.opacity(0.25)), style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
             }
             let centre = max(a + 30, min(b - 30, (max(fi, 0) + min(fo, w)) / 2))
-            let value = (r.isReference ? "★ " : "") + signed(r.gain) + " dB"
-            let pill = CGRect(x: centre - 32, y: y - 9, width: 64, height: 18)
+            let value = (r.isReference ? "★ " : (r.isAuto == true ? "auto " : "")) + signed(r.gain) + " dB"
+            let pill = CGRect(x: centre - (r.isAuto == true ? 42 : 32), y: y - 9, width: r.isAuto == true ? 84 : 64, height: 18)
             context.fill(Path(roundedRect: pill, cornerRadius: 5), with: .color(isSelected ? Theme.bone : Theme.raised))
             context.stroke(Path(roundedRect: pill, cornerRadius: 5), with: .color(r.isReference ? Theme.lime : Theme.bone.opacity(0.5)), lineWidth: 1)
             context.draw(Text(value).font(.system(size: 10.5, weight: .bold)).monospacedDigit().foregroundColor(isSelected ? Theme.base : Theme.bone), at: CGPoint(x: centre, y: y))

@@ -29,6 +29,7 @@ struct Session: Codable {
     var quickLevel: Bool? = nil; var quickFolder: URL? = nil
     var watchFolder: URL? = nil; var watching: Bool? = nil; var autoRecommend: Bool? = nil
     var settingsRevision: Int? = nil
+    var evenOut: Bool? = nil
 }
 /// Common loudness specifications. Targets and ceilings only; nothing else changes.
 struct LoudnessPreset: Identifiable, Hashable {
@@ -94,6 +95,8 @@ struct ExportReport: Codable {
     @Published var watching = false
     /// Apply each cue's reference recommendation automatically when processing a batch (non-lossless modes).
     @Published var autoRecommend = false { didSet { persist() } }
+    /// Quick Level: even out clearly loud or quiet stretches with clip gain before levelling (1.4). On by default.
+    @Published var evenOut = true { didSet { persist() } }
     private var watchTimer: Timer?
     /// Files seen in the watch folder, with their last observed size, so only new, fully written files are added.
     private var watchSeen: [String: Int64] = [:]
@@ -130,7 +133,7 @@ struct ExportReport: Codable {
         if let data = try? Data(contentsOf: directory.appendingPathComponent("session.json")), let saved = try? JSONDecoder().decode(Session.self, from: data) {
             jobs = saved.jobs; settings = saved.settings; presets = saved.presets
             quickFolder = saved.quickFolder; quickLevel = (saved.quickLevel ?? false) && saved.quickFolder != nil
-            watchFolder = saved.watchFolder; autoRecommend = saved.autoRecommend ?? false
+            watchFolder = saved.watchFolder; autoRecommend = saved.autoRecommend ?? false; evenOut = saved.evenOut ?? true
             if saved.watching == true, saved.watchFolder != nil { startWatching() }
             settings.cut = max(2, settings.cut)
             // 1.1.1: the standard is now −18 LUFS. A session still on the old −23 default moves to −18 / −1 dBTP once;
@@ -161,7 +164,7 @@ struct ExportReport: Codable {
         status = jobs.isEmpty ? "Add files to begin" : "Previous session restored"
     }
     func persist() {
-        let snapshot = Session(jobs: jobs, settings: settings, presets: presets, quickLevel: quickLevel, quickFolder: quickFolder, watchFolder: watchFolder, watching: watching, autoRecommend: autoRecommend, settingsRevision: Self.settingsRevision)
+        let snapshot = Session(jobs: jobs, settings: settings, presets: presets, quickLevel: quickLevel, quickFolder: quickFolder, watchFolder: watchFolder, watching: watching, autoRecommend: autoRecommend, settingsRevision: Self.settingsRevision, evenOut: evenOut)
         if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: directory.appendingPathComponent("session.json"), options: .atomic) }
     }
     func changeMode(_ mode: ContentMode) { settings.setMode(mode) }
@@ -221,6 +224,15 @@ struct ExportReport: Codable {
                         }.value
                     }
                     update(id) { $0.analysis = analysis }
+                    var evened = 0
+                    if render && quick && evenOut {
+                        update(id) { $0.message = "Evening out loud and quiet stretches" }
+                        let manual = (jobs.first(where: { $0.id == id })?.clipGain ?? []).filter { $0.isAuto != true }
+                        let source = current.source, info = analysis.info
+                        let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, keeping: manual, token: cancellation) }.value
+                        update(id) { $0.clipGain = manual + auto }
+                        evened = auto.count
+                    }
                     var cueOptions = Self.settingsForCue(options, analysis: analysis, library: references, recommend: autoRecommend && !quick)
                     cueOptions.clipGain = jobs.first(where: { $0.id == id })?.clipGain
                     if render {
@@ -237,7 +249,7 @@ struct ExportReport: Codable {
                             let sources = jobs.map(\.source)
                             do {
                                 try await Task.detached { try Self.atomicCopy(from: result.url, to: destination, sources: sources, allowReplace: false) }.value
-                                update(id) { $0.exportURL = destination; $0.message = (result.warnings.isEmpty ? "Levelled → " : "Levelled with notes → ") + destination.lastPathComponent }
+                                update(id) { $0.exportURL = destination; $0.message = (evened > 0 ? "Evened out \(evened) stretch\(evened == 1 ? "" : "es"), levelled → " : (result.warnings.isEmpty ? "Levelled → " : "Levelled with notes → ")) + destination.lastPathComponent }
                             } catch {
                                 update(id) { $0.status = .review; $0.message = "Levelled, but saving to the Quick Level folder failed: \(error.localizedDescription)" }
                             }
@@ -362,6 +374,20 @@ struct ExportReport: Codable {
         // Loudness readings are only valid for the edits they were measured with.
         sectionLoudness = [:]
         applyPreviewMix(); persist()
+    }
+    /// Even out for the selected cue: replaces earlier Even out sections, keeps hand-drawn ones. Undoable.
+    func evenOutSelected() {
+        guard !measuringSection, let job = selected, let info = job.analysis?.info else { return }
+        measuringSection = true; status = "Finding loud and quiet stretches"
+        let manual = selectedRegions.filter { $0.isAuto != true }, source = job.source
+        Task {
+            defer { measuringSection = false }
+            do {
+                let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, keeping: manual, token: Cancellation()) }.value
+                setRegions(manual + auto)
+                status = auto.isEmpty ? "Already even: nothing is more than \(Int(ClipGain.evenOutTolerance)) dB from the typical level" : "Even out made \(auto.count) section\(auto.count == 1 ? "" : "s"). Adjust any of them, then click Done editing."
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func undoRegions() { if let previous = history.undo(current: selectedRegions) { setRegions(previous, recordUndo: false) } }
     func redoRegions() { if let next = history.redo(current: selectedRegions) { setRegions(next, recordUndo: false) } }

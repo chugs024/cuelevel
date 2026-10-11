@@ -379,11 +379,13 @@ final class WaveCollector: @unchecked Sendable {
 final class CurveCollector: @unchecked Sendable {
     var pending = ""
     var values: [Float] = []
+    let key: String
+    init(key: String = "lavfi.r128.S") { self.key = key + "=" }
     func consume(_ chunk: Data) {
         pending += String(decoding: chunk, as: UTF8.self)
         while let newline = pending.firstIndex(of: "\n") {
             let line = pending[..<newline]
-            if line.hasPrefix("lavfi.r128.S="), let value = Float(line.dropFirst(13)), value.isFinite { values.append(max(-70, min(0, value))) }
+            if line.hasPrefix(key), let value = Float(line.dropFirst(key.count)), value.isFinite { values.append(max(-70, min(0, value))) }
             pending.removeSubrange(...newline)
         }
     }
@@ -489,6 +491,17 @@ enum AudioEngine {
         let collector = CurveCollector()
         try run(["-i", input.path, "-map", "0:a:0", "-vn", "-af", "aformat=channel_layouts=stereo,ebur128=metadata=1:framelog=verbose,ametadata=mode=print:key=lavfi.r128.S:file=-", "-f", "null", "-"], token: token, duration: duration, progress: progress, output: { collector.consume($0) })
         return collector.reduced()
+    }
+    /// Momentary (400 ms) loudness every 100 ms across the whole file, for Even out.
+    static func momentaryLoudness(_ input: URL, duration: Double, token: Cancellation) throws -> [Float] {
+        let collector = CurveCollector(key: "lavfi.r128.M")
+        try run(["-i", input.path, "-map", "0:a:0", "-vn", "-af", "aformat=channel_layouts=stereo,ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.M:file=-", "-f", "null", "-"], token: token, duration: duration, output: { collector.consume($0) })
+        return collector.values
+    }
+    /// Even out: clip gain sections that bring clearly loud or quiet stretches back to the cue's typical level.
+    static func evenOutRegions(_ input: URL, info: MediaInfo, tolerance: Double = ClipGain.evenOutTolerance, keeping existing: [GainRegion], token: Cancellation) throws -> [GainRegion] {
+        let curve = try momentaryLoudness(input, duration: info.duration, token: token)
+        return ClipGain.evenOut(momentary: curve.map(Double.init), duration: info.duration, tolerance: tolerance, avoiding: existing)
     }
     static func analyze(_ input: URL, token: Cancellation, progress: @escaping @Sendable (Double, String) -> Void) throws -> Analysis {
         progress(0, "Inspecting file")

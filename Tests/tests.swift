@@ -405,6 +405,30 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let fine = try AudioEngine.detailWaveform(speechLike, duration: sectionsAnalysis.info.duration, token: Cancellation())
         check(fine.count == 1600 && fine.max()! > 0.005, "fine waveform at 200 points per second: \(fine.count)")
         print("PASS: zoom, undo, preview envelope and fine waveform")
+
+        // 27. Even out: a loud stretch in the middle is found, turned down to match, and the render comes out even.
+        let uneven = try make("uneven.wav", ["-f","lavfi","-i","aevalsrc=(0.05+0.2*between(t\\,4\\,8))*sin(2*PI*220*t):s=48000:d=12","-ac","2","-c:a","pcm_s24le"])
+        let unevenInfo = try AudioEngine.inspect(uneven, token: Cancellation())
+        let auto = try AudioEngine.evenOutRegions(uneven, info: unevenInfo, keeping: [], token: Cancellation())
+        check(auto.count == 1, "one loud stretch found: \(auto)")
+        check(abs(auto[0].start - 4) < 0.6 && abs(auto[0].end - 8) < 0.6 && abs(auto[0].gain - (-14)) <= 1 && auto[0].isAuto == true, "section and gain: \(auto[0])")
+        let handDrawn = GainRegion(start: 3.5, end: 9, gain: 1)
+        check(try AudioEngine.evenOutRegions(uneven, info: unevenInfo, keeping: [handDrawn], token: Cancellation()).isEmpty, "never overlaps a hand-drawn section")
+        let steadyCurve = [Double](repeating: -20, count: 200)
+        check(ClipGain.evenOut(momentary: steadyCurve, duration: 20).isEmpty, "steady material is left alone")
+        var withPauses = steadyCurve; for i in stride(from: 0, to: 200, by: 25) { for j in i..<min(200, i + 6) { withPauses[j] = -70 } }
+        check(ClipGain.evenOut(momentary: withPauses, duration: 20).isEmpty, "pauses alone don't create sections")
+        var quietStretch = steadyCurve; for i in 80..<130 { quietStretch[i] = -27 }
+        let lifted = ClipGain.evenOut(momentary: quietStretch, duration: 20)
+        check(lifted.count == 1 && near(lifted[0].gain, 7, 0.01), "quiet stretch lifted: \(lifted)")
+        var evenSettings = lossless; evenSettings.clipGain = auto
+        let unevenAnalysis2 = try AudioEngine.analyze(uneven, token: Cancellation()) { _, _ in }
+        let evenOut = try AudioEngine.process(uneven, analysis: unevenAnalysis2, settings: evenSettings, directory: area.appendingPathComponent("render-even"), token: Cancellation()) { _, _ in }
+        let evenInfo = try AudioEngine.inspect(evenOut.url, token: Cancellation())
+        let a1 = try AudioEngine.sectionLoudness(evenOut.url, info: evenInfo, start: 1, end: 3.5, regions: [], token: Cancellation())
+        let a2 = try AudioEngine.sectionLoudness(evenOut.url, info: evenInfo, start: 4.8, end: 7.2, regions: [], token: Cancellation())
+        check(abs(a1 - a2) <= 1.0, "output is even: \(a1) vs \(a2)")
+        print("PASS: even out finds loud/quiet stretches and the render comes out even")
         print("ALL 1.1 TESTS PASSED")
     }
 }
