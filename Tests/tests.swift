@@ -357,15 +357,16 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         check(ClipGain.matchGain(reference: -20, section: -26.04) == 6 && ClipGain.matchGain(reference: -10, section: -60) == 24, "match gain clamped")
         let speechLike = try make("sections.wav", ["-f","lavfi","-i","sine=frequency=330:sample_rate=48000:duration=8","-af","volume=-16dB","-ac","2","-c:a","pcm_s24le"])
         let sectionsAnalysis = try AudioEngine.analyze(speechLike, token: Cancellation()) { _, _ in }
-        var edited = lossless; edited.clipGain = [GainRegion(start: 4, end: 8, gain: -6, fadeIn: 0.05, fadeOut: 0.05)]
-        let editedOut = try AudioEngine.process(speechLike, analysis: sectionsAnalysis, settings: edited, directory: area.appendingPathComponent("render-clip"), token: Cancellation()) { _, _ in }
+        var clipSettings = lossless; clipSettings.clipGain = [GainRegion(start: 4, end: 8, gain: -6, fadeIn: 0.05, fadeOut: 0.05)]
+        let editedOut = try AudioEngine.process(speechLike, analysis: sectionsAnalysis, settings: clipSettings, directory: area.appendingPathComponent("render-clip"), token: Cancellation()) { _, _ in }
         let outInfo = try AudioEngine.inspect(editedOut.url, token: Cancellation())
         let firstHalf = try AudioEngine.sectionLoudness(editedOut.url, info: outInfo, start: 0.5, end: 3.5, regions: [], token: Cancellation())
         let secondHalf = try AudioEngine.sectionLoudness(editedOut.url, info: outInfo, start: 4.5, end: 7.5, regions: [], token: Cancellation())
         check(near(firstHalf - secondHalf, 6, 0.2), "edited section is 6 dB quieter: \(firstHalf) vs \(secondHalf)")
-        check(abs(editedOut.levels.integrated - (-18 - (editedOut.shortfall ?? 0))) < 0.5 && outInfo.sampleRate == 48000, "edited cue still levelled: \(editedOut.levels.integrated)")
+        let plannedLevel: Double = -18.0 - (editedOut.shortfall ?? 0.0)
+        check(abs(editedOut.levels.integrated - plannedLevel) < 0.5 && outInfo.sampleRate == 48000, "edited cue still levelled: \(editedOut.levels.integrated)")
         check(editedOut.warnings.contains { $0.contains("Clip gain changed the volume of 1 section") }, "clip gain reported")
-        let measuredMatch = try AudioEngine.sectionLoudness(speechLike, info: sectionsAnalysis.info, start: 4.5, end: 7.5, regions: edited.clipGain!, token: Cancellation())
+        let measuredMatch = try AudioEngine.sectionLoudness(speechLike, info: sectionsAnalysis.info, start: 4.5, end: 7.5, regions: clipSettings.clipGain!, token: Cancellation())
         check(near(measuredMatch, sectionsAnalysis.levels.integrated - 6, 0.3), "section measured after clip gain")
         print("PASS: clip gain sections, fades, render and section measurement")
         print("ALL 1.1 TESTS PASSED")
