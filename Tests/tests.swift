@@ -331,6 +331,21 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         check(Updater.installDestination(bundle: URL(fileURLWithPath: "/Volumes/CueLevel 1.1/CueLevel.app")).path == "/Applications/CueLevel.app", "never installs onto the DMG")
         check(Updater.shellQuote("it's") == "'it'\\''s'", "shell quoting")
         print("PASS: update feed rules")
+
+        // 23. 1.1.1 defaults: new sessions start at −18 LUFS / −1 dBTP; an old −23 session moves once; other choices are kept.
+        check(Workspace(dataDirectory: area.appendingPathComponent("fresh-app")).settings.target == -18, "new sessions start at -18")
+        func migrated(target: Double, revision: Int?) throws -> ProcessingSettings {
+            let folder = area.appendingPathComponent("migrate-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var old = ProcessingSettings(); old.target = target; old.peak = -2
+            try JSONEncoder().encode(Session(jobs: [], settings: old, presets: [], settingsRevision: revision)).write(to: folder.appendingPathComponent("session.json"))
+            return Workspace(dataDirectory: folder).settings
+        }
+        let moved = try migrated(target: -23, revision: nil)
+        check(moved.target == -18 && moved.peak == -1, "old -23 default moves to -18 / -1")
+        check(try migrated(target: -16, revision: nil).target == -16, "a deliberate target is kept")
+        check(try migrated(target: -23, revision: 2).target == -23, "a -23 chosen after the change is kept")
+        print("PASS: -18 LUFS standard and one-time migration")
         print("ALL 1.1 TESTS PASSED")
     }
 }

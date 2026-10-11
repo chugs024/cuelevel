@@ -42,6 +42,8 @@ struct Appcast: Codable, Equatable, Sendable {
 
 enum UpdateState: Equatable {
     case idle, checking, upToDate, available(Appcast), downloading(Double), installing, failed(String)
+    /// Shown once on the first launch after an update: what changed in the version now running.
+    case justUpdated(Appcast)
 }
 
 @MainActor final class Updater: ObservableObject {
@@ -50,8 +52,14 @@ enum UpdateState: Equatable {
     static let autoCheckKey = "CueLevelCheckForUpdates"
     static let lastCheckKey = "CueLevelLastUpdateCheck"
     static let skippedKey = "CueLevelSkippedBuild"
+    static let lastRunBuildKey = "CueLevelLastRunBuild"
 
-    @Published var state = UpdateState.idle { didSet { if case .available(let feed) = state { offered = feed } } }
+    @Published var state = UpdateState.idle {
+        didSet {
+            if case .available(let feed) = state { offered = feed }
+            if case .justUpdated(let feed) = state { offered = feed }
+        }
+    }
     /// The release last offered, kept while it downloads and installs.
     @Published private(set) var offered: Appcast?
     @Published var showSheet = false
@@ -76,12 +84,15 @@ enum UpdateState: Equatable {
     var isWorking: Bool { switch state { case .checking, .downloading, .installing: return true; default: return false } }
     var canCheck: Bool { feedURL != nil && !isWorking }
 
-    /// Checks at launch (at most every 6 hours) and then twice a day while CueLevel stays open.
+    /// On the first launch after an update, shows what's new; otherwise checks at every launch and every 4 hours
+    /// while CueLevel stays open, and pops up "New version available" when there is one.
     func start() {
         guard feedURL != nil else { return }
-        let last = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date ?? .distantPast
-        if autoCheck && Date().timeIntervalSince(last) > 6 * 3600 { Task { await check(userInitiated: false) } }
-        timer = Timer.scheduledTimer(withTimeInterval: 12 * 3600, repeats: true) { [weak self] _ in
+        let lastRun = UserDefaults.standard.integer(forKey: Self.lastRunBuildKey)
+        UserDefaults.standard.set(currentBuild, forKey: Self.lastRunBuildKey)
+        if lastRun > 0 && lastRun < currentBuild { Task { await showWhatsNew() } }
+        else if autoCheck { Task { await check(userInitiated: false) } }
+        timer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) { [weak self] _ in
             Task { @MainActor in if let self, self.autoCheck { await self.check(userInitiated: false) } }
         }
     }
@@ -105,6 +116,13 @@ enum UpdateState: Equatable {
         } catch {
             state = userInitiated ? .failed(Self.describe(error)) : .idle
         }
+    }
+
+    /// Reads the feed and, when it describes the version now running, shows its notes once.
+    func showWhatsNew() async {
+        guard let feedURL, let (data, _) = try? await URLSession.shared.data(from: feedURL), let feed = try? Appcast.decode(data) else { return }
+        if feed.build == currentBuild { state = .justUpdated(feed); showSheet = true }
+        else if feed.isNewer(thanBuild: currentBuild) && autoCheck { state = .available(feed); showSheet = true }
     }
 
     func skip() {

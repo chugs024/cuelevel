@@ -787,32 +787,58 @@ struct ContentView: View {
         }.padding(24).frame(width: 420).background(Theme.panel).preferredColorScheme(.dark)
     }
     var updateSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 14) {
-                LogoMark().frame(width: 44, height: 44)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(updater.offered.map { "CueLevel \($0.version)" } ?? "Software update").font(.system(size: 18, weight: .semibold))
-                    Text("You have \(updater.currentVersion) (build \(updater.currentBuild))").hint()
+        let feed = updater.offered
+        let justUpdated: Bool = { if case .justUpdated = updater.state { return true }; return false }()
+        let headline: String = {
+            switch updater.state {
+            case .justUpdated: return "CueLevel has been updated"
+            case .available, .downloading, .installing: return "New version available"
+            case .checking: return "Checking for updates"
+            case .upToDate: return "You're up to date"
+            case .failed: return feed == nil ? "Couldn't check for updates" : "Update not installed"
+            case .idle: return "Software update"
+            }
+        }()
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 14) {
+                LogoMark().frame(width: 52, height: 52)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(headline).font(.system(size: 19, weight: .semibold)).tracking(-0.2)
+                    if let feed, justUpdated {
+                        Text("You're now on CueLevel \(feed.version).").hint()
+                    } else if let feed, updater.state != .upToDate {
+                        HStack(spacing: 6) {
+                            Text("CueLevel \(feed.version)").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.teal)
+                                .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(Theme.teal.opacity(0.14)))
+                            Text("You have \(updater.currentVersion)").hint()
+                        }
+                    } else {
+                        Text("CueLevel \(updater.currentVersion) (build \(updater.currentBuild))").hint()
+                    }
                 }
             }
             switch updater.state {
             case .checking: HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Checking for updates…").hint() }
-            case .upToDate: Text("CueLevel is up to date.").font(.system(size: 13)).foregroundStyle(Theme.text)
+            case .upToDate: Text("You have the newest version of CueLevel.").font(.system(size: 13)).foregroundStyle(Theme.text)
             case .failed(let message): Text(message).font(.system(size: 13)).foregroundStyle(Theme.coral).fixedSize(horizontal: false, vertical: true)
             case .downloading(let fraction): VStack(alignment: .leading, spacing: 6) { ProgressView(value: fraction).tint(Theme.teal); Text("Downloading… \(Int(fraction * 100))%").hint() }
             case .installing: HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Checking the signature and installing. CueLevel will reopen by itself.").hint() }
-            case .idle, .available: EmptyView()
+            case .idle, .available, .justUpdated: EmptyView()
             }
-            if let feed = updater.offered, !feed.noteLines.isEmpty, updater.state != .upToDate {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("What's new").sectionTitle()
+            if let feed, !feed.noteLines.isEmpty, updater.state != .upToDate {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("WHAT'S NEW").font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.muted)
                     ForEach(feed.noteLines, id: \.self) { line in
-                        HStack(alignment: .firstTextBaseline, spacing: 7) { Circle().fill(Theme.teal).frame(width: 4, height: 4); Text(line).font(.system(size: 12.5)).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true) }
+                        HStack(alignment: .firstTextBaseline, spacing: 9) {
+                            Image(systemName: "sparkle").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.teal)
+                            Text(line).font(.system(size: 13)).foregroundStyle(Theme.bone.opacity(0.92)).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 8).fill(Theme.field))
+                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Theme.field)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
             }
-            if model.busy, updater.available != nil { Text("CueLevel is working. Installing waits until the current job finishes or you stop it.").hint() }
-            HStack {
+            if model.busy, updater.available != nil { Text("CueLevel is working. You can install once the current job finishes or you stop it.").hint() }
+            HStack(spacing: 8) {
                 if updater.available != nil { Button("Skip this version") { updater.skip() }.buttonStyle(CLButton(kind: .ghost)) }
                 Spacer()
                 switch updater.state {
@@ -821,10 +847,11 @@ struct ContentView: View {
                     Button("Install and reopen") { updater.install(canQuit: !model.busy) }.buttonStyle(CLButton(kind: .primary)).keyboardShortcut(.defaultAction).disabled(model.busy)
                 case .downloading: Button("Cancel") { updater.cancel() }.buttonStyle(CLButton(kind: .ghost))
                 case .installing: EmptyView()
+                case .justUpdated: Button("Got it") { updater.showSheet = false; updater.state = .idle }.buttonStyle(CLButton(kind: .primary)).keyboardShortcut(.defaultAction)
                 default: Button("Done") { updater.showSheet = false }.buttonStyle(CLButton(kind: .primary)).keyboardShortcut(.defaultAction)
                 }
             }
-        }.padding(24).frame(width: 460).background(Theme.panel).preferredColorScheme(.dark)
+        }.padding(26).frame(width: 500).background(Theme.panel).preferredColorScheme(.dark)
     }
     var referenceSheet: some View {
         let job = model.jobs.first { $0.id == model.referenceDraft }

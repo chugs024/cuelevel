@@ -26,6 +26,7 @@ struct Session: Codable {
     var jobs: [CueJob]; var settings: ProcessingSettings; var presets: [SavedPreset]
     var quickLevel: Bool? = nil; var quickFolder: URL? = nil
     var watchFolder: URL? = nil; var watching: Bool? = nil; var autoRecommend: Bool? = nil
+    var settingsRevision: Int? = nil
 }
 /// Common loudness specifications. Targets and ceilings only; nothing else changes.
 struct LoudnessPreset: Identifiable, Hashable {
@@ -56,7 +57,11 @@ struct ExportReport: Codable {
 @MainActor final class Workspace: ObservableObject {
     @Published var jobs: [CueJob] = []
     @Published var selection: UUID? { didSet { loadPlayer() } }
-    @Published var settings = ProcessingSettings() { didSet { persist() } }
+    @Published var settings = Workspace.venueDefaults { didSet { persist() } }
+    /// New sessions start at the live-venue standard: −18 LUFS, −1 dBTP.
+    static var venueDefaults: ProcessingSettings { var s = ProcessingSettings(); s.target = -18; s.peak = -1; return s }
+    /// Bumped when a default changes; older sessions are migrated once on load.
+    static let settingsRevision = 2
     @Published var presets: [SavedPreset] = []
     @Published var busy = false
     @Published var workingID: UUID?
@@ -124,6 +129,11 @@ struct ExportReport: Codable {
             watchFolder = saved.watchFolder; autoRecommend = saved.autoRecommend ?? false
             if saved.watching == true, saved.watchFolder != nil { startWatching() }
             settings.cut = max(2, settings.cut)
+            // 1.1.1: the standard is now −18 LUFS. A session still on the old −23 default moves to −18 / −1 dBTP once;
+            // any other target the user chose is kept.
+            if (saved.settingsRevision ?? 1) < Self.settingsRevision, settings.target == -23 {
+                settings.target = -18; if settings.peak == -2 { settings.peak = -1 }
+            }
             for i in presets.indices { presets[i].settings.cut = max(2, presets[i].settings.cut) }
             for i in jobs.indices {
                 if jobs[i].status == .working { jobs[i].status = .queued; jobs[i].message = "Interrupted — ready to retry"; jobs[i].progress = 0 }
@@ -147,7 +157,7 @@ struct ExportReport: Codable {
         status = jobs.isEmpty ? "Add files to begin" : "Previous session restored"
     }
     func persist() {
-        let snapshot = Session(jobs: jobs, settings: settings, presets: presets, quickLevel: quickLevel, quickFolder: quickFolder, watchFolder: watchFolder, watching: watching, autoRecommend: autoRecommend)
+        let snapshot = Session(jobs: jobs, settings: settings, presets: presets, quickLevel: quickLevel, quickFolder: quickFolder, watchFolder: watchFolder, watching: watching, autoRecommend: autoRecommend, settingsRevision: Self.settingsRevision)
         if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: directory.appendingPathComponent("session.json"), options: .atomic) }
     }
     func changeMode(_ mode: ContentMode) { settings.setMode(mode) }
