@@ -531,6 +531,23 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         check(vspan.shapeCount == 2 && vspan.spread == 6...7.4 && near(vspan.shape!.lowerBound, -4) && shaped.evenOutTolerance(for: .voice) == 3.5, "shapes set tolerance: \(vspan) \(shaped.evenOutTolerance(for: .voice))")
         check(try sha(libraryFolder.appendingPathComponent("library.json")) == libraryHash, "source library untouched by shapes")
         print("PASS: even out without fades, reference shapes and tolerance")
+
+        // 31. 1.8: already-good cues are left alone (exact copy), others are not.
+        var goodLevels = cue(-18.4, tp: -3.1, lra: 5, crest: 15)
+        let goodAnalysis = Analysis(info: sectionsAnalysis.info, levels: goodLevels, waveform: [], loudnessCurve: [Float](repeating: -18, count: 100))
+        let goodReason = Workspace.alreadyGoodReason(analysis: goodAnalysis, target: -18, peak: -1, autoSections: 0, hasEdits: false, library: library, mode: .voice)
+        check(goodReason?.contains("within 1 LU") == true, "already good: \(goodReason ?? "nil")")
+        check(Workspace.alreadyGoodReason(analysis: goodAnalysis, target: -18, peak: -1, autoSections: 1, hasEdits: false, library: library, mode: .voice) == nil, "even out work means not good")
+        check(Workspace.alreadyGoodReason(analysis: goodAnalysis, target: -18, peak: -1, autoSections: 0, hasEdits: true, library: library, mode: .voice) == nil, "hand edits mean not good")
+        goodLevels.integrated = -19.5
+        check(Workspace.alreadyGoodReason(analysis: Analysis(info: sectionsAnalysis.info, levels: goodLevels, waveform: []), target: -18, peak: -1, autoSections: 0, hasEdits: false, library: library, mode: .voice) == nil, "1.5 LU off is not good")
+        var hotLevels = cue(-18, tp: -0.5, lra: 5, crest: 15); hotLevels.integrated = -18
+        check(Workspace.alreadyGoodReason(analysis: Analysis(info: sectionsAnalysis.info, levels: hotLevels, waveform: []), target: -18, peak: -1, autoSections: 0, hasEdits: false, library: library, mode: .voice) == nil, "peaks over the ceiling are not good")
+        let copy = try AudioEngine.unchangedCopy(speechLike, analysis: sectionsAnalysis, settings: lossless, directory: area.appendingPathComponent("unchanged"))
+        check(try sha(copy.url) == sha(speechLike) && copy.finalGainMode == "unchanged" && copy.gainApplied == 0, "exact copy")
+        var goodJob = CueJob(source: speechLike); goodJob.analysis = sectionsAnalysis; goodJob.output = copy; goodJob.alreadyGood = "fine"
+        check(Workspace.showReportRows([goodJob])[1][14] == "No change needed", "report says no change needed")
+        print("PASS: already-good cues")
         print("ALL 1.1 TESTS PASSED")
     }
 }

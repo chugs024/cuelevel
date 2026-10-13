@@ -612,6 +612,14 @@ enum AudioEngine {
             return ProcessedAudio(url: output, levels: levels, waveform: wave, settings: settings, warnings: warnings, created: Date(), audioCompanion: companion, companionLevels: audioLevels, finalGainMode: gainMode, companionGainMode: companionMode, loudnessCurve: curve)
         } catch { try? FileManager.default.removeItem(at: output); if let companion { try? FileManager.default.removeItem(at: companion) }; throw error }
     }
+    /// "Already good" (1.8): an exact, bit-for-bit copy of the source, described like a levelled result with no change.
+    static func unchangedCopy(_ input: URL, analysis: Analysis, settings: ProcessingSettings, directory: URL) throws -> ProcessedAudio {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let output = directory.appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_CueLevel." + input.pathExtension)
+        try FileManager.default.copyItem(at: input, to: output)
+        return ProcessedAudio(url: output, levels: analysis.levels, waveform: analysis.waveform, settings: settings, warnings: [], created: Date(),
+                              finalGainMode: "unchanged", loudnessCurve: analysis.loudnessCurve, gainApplied: 0, shortfall: 0, limiting: 0)
+    }
     /// QuickTime-family sources become MOV (MP4 cannot carry uncompressed audio); others become MKV so every stream can be copied.
     static func losslessExtension(for input: URL, isVideo: Bool) -> String {
         guard isVideo else { return "wav" }

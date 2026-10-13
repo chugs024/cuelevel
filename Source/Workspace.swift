@@ -27,6 +27,8 @@ struct CueJob: Identifiable, Codable {
     /// Saved alternative edits (1.6) and the on-device transcript.
     var versions: [CueVersion]? = nil
     var transcript: [TranscriptWord]? = nil
+    /// Set when Quick Level found nothing to change (1.8): why the cue is already good.
+    var alreadyGood: String? = nil
 }
 struct SavedPreset: Codable, Identifiable { var id = UUID(); var name: String; var settings: ProcessingSettings }
 struct Session: Codable {
@@ -263,11 +265,18 @@ struct ExportReport: Codable {
                     cueOptions.edit = jobs.first(where: { $0.id == id })?.edit
                     if render {
                         let renderDirectory = directory.appendingPathComponent("Cache/\(id.uuidString)/\(UUID().uuidString)", isDirectory: true)
-                        let result = try await Task.detached {
-                            try AudioEngine.process(current.source, analysis: analysis, settings: cueOptions, directory: renderDirectory, token: cancellation) { value, message in
+                        // Quick Level first asks whether the cue needs anything at all.
+                        let latest = jobs.first(where: { $0.id == id })
+                        let goodReason: String? = quick ? Self.alreadyGoodReason(analysis: analysis, target: cueOptions.target, peak: cueOptions.peak,
+                            autoSections: evened, hasEdits: Self.hasHandEdits(latest, duration: analysis.info.duration), library: references, mode: cueOptions.mode) : nil
+                        let cueSettings = cueOptions, source = current.source
+                        let result = try await Task.detached { () -> ProcessedAudio in
+                            if goodReason != nil { return try AudioEngine.unchangedCopy(source, analysis: analysis, settings: cueSettings, directory: renderDirectory) }
+                            return try AudioEngine.process(source, analysis: analysis, settings: cueSettings, directory: renderDirectory, token: cancellation) { value, message in
                                 Task { @MainActor in self.progress(id, 0.3 + value * 0.7, message) }
                             }
                         }.value
+                        update(id) { $0.alreadyGood = goodReason }
                         if let previous = current.output { try? FileManager.default.removeItem(at: previous.url.deletingLastPathComponent()) }
                         update(id) { $0.output = result; $0.exportURL = nil; $0.audioExportURL = nil; $0.progress = 1; $0.status = result.warnings.isEmpty ? .ready : .review; $0.message = result.warnings.isEmpty ? "Ready to export" : "Review notes before export" }
                         if quick {
@@ -277,7 +286,7 @@ struct ExportReport: Codable {
                             let sources = jobs.map(\.source)
                             do {
                                 try await Task.detached { try Self.atomicCopy(from: result.url, to: destination, sources: sources, allowReplace: false) }.value
-                                update(id) { $0.exportURL = destination; $0.message = (evened > 0 ? "Evened out \(evened) stretch\(evened == 1 ? "" : "es"), levelled → " : (result.warnings.isEmpty ? "Levelled → " : "Levelled with notes → ")) + destination.lastPathComponent }
+                                update(id) { $0.exportURL = destination; $0.message = goodReason != nil ? "✓ Already good, no change needed → " + destination.lastPathComponent : (evened > 0 ? "Evened out \(evened) stretch\(evened == 1 ? "" : "es"), levelled → " : (result.warnings.isEmpty ? "Levelled → " : "Levelled with notes → ")) + destination.lastPathComponent }
                             } catch {
                                 update(id) { $0.status = .review; $0.message = "Levelled, but saving to the Quick Level folder failed: \(error.localizedDescription)" }
                             }
@@ -555,6 +564,30 @@ struct ExportReport: Codable {
     }
     func fixDCOffset() { var e = selectedEdit; e.removeDC = true; setEdit(e); status = "DC offset will be removed when the cue is levelled" }
     func fixPolarity(_ fix: PolarityFix) { var e = selectedEdit; e.polarity = fix; setEdit(e); status = fix == .none ? "Polarity normal" : "\(fix.rawValue) when the cue is levelled" }
+
+    // MARK: Already good (1.8)
+    /// Hand-made changes (sections drawn by hand, trims, fades, repairs) always mean the cue is processed.
+    nonisolated static func hasHandEdits(_ job: CueJob?, duration: Double) -> Bool {
+        guard let job else { return false }
+        if ClipGain.active(job.clipGain).contains(where: { $0.isAuto != true }) || (job.clipGain ?? []).contains(where: { $0.hasEffects }) { return true }
+        return job.edit?.changesAudio(duration: duration) ?? false
+    }
+    /// Why a cue needs no change, or nil when it does: loudness within 1 LU of the target, peaks under the ceiling,
+    /// nothing for Even out to fix, no hand edits, and no clipping, DC offset or phase problem.
+    nonisolated static func alreadyGoodReason(analysis: Analysis, target: Double, peak: Double, autoSections: Int, hasEdits: Bool,
+                                              library: ReferenceLibrary, mode: ContentMode) -> String? {
+        let levels = analysis.levels
+        guard abs(levels.integrated - target) <= 1.0, levels.truePeak <= peak, autoSections == 0, !hasEdits else { return nil }
+        let problems = analysis.sourceFindings.filter { $0.contains("clipping") || $0.contains("DC offset") || $0.contains("out of phase") }
+        guard problems.isEmpty else { return nil }
+        func f(_ v: Double) -> String { String(format: "%.1f", v).replacingOccurrences(of: "-", with: "−") }
+        var parts = ["\(f(levels.integrated)) LUFS, within 1 LU of \(f(target))", "peaks \(f(levels.truePeak)) dBTP"]
+        if let spread = analysis.loudnessCurve.flatMap({ LoudnessProfile(shortTerm: $0.map(Double.init)) })?.spread {
+            let good = library.span(for: mode)?.spread
+            parts.append(good.map { "moves \(f(spread)) LU (good \(mode.rawValue): \(f($0.lowerBound))–\(f($0.upperBound)))" } ?? "moves \(f(spread)) LU, nothing to even out")
+        }
+        return parts.joined(separator: " · ")
+    }
 
     // MARK: Reference shapes — what good sounds like over time (1.7)
     /// The band where good references of this content type sit, relative to the target (short-term LUFS).
@@ -910,7 +943,7 @@ struct ExportReport: Codable {
                          analysis.info.isVideo ? "Video" : "Audio", out?.settings.mode.rawValue ?? "", out?.settings.format.rawValue ?? "",
                          f(analysis.levels.integrated), f(analysis.levels.truePeak), f(analysis.levels.loudnessRange),
                          f(out?.levels.integrated), f(out?.levels.truePeak), f(gain), f(out?.shortfall), f(out?.limiting),
-                         job.status.rawValue, notes.joined(separator: " | "), editSummary(job, duration: analysis.info.duration),
+                         job.alreadyGood != nil ? "No change needed" : job.status.rawValue, notes.joined(separator: " | "), editSummary(job, duration: analysis.info.duration),
                          (job.edit?.markers ?? []).map { "\($0.name) @ \(clockText($0.time))" }.joined(separator: " | ")])
         }
         return rows

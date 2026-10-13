@@ -295,7 +295,14 @@ struct ContentView: View {
                 Spacer(minLength: 2)
                 Button("Open") { model.revealOutputFolder() }.buttonStyle(.plain).foregroundStyle(Theme.teal)
             }.font(.system(size: 11)).help("Levelled copies are saved here with this name. Nothing is ever overwritten.")
-            if let output = job.output, let analysis = job.analysis {
+            if let reason = job.alreadyGood, job.output != nil {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Already good, no change needed", systemImage: "checkmark.seal.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.lime)
+                    Text(reason).hint()
+                    Text("An exact copy of the original was saved, so the folder has every cue.").hint()
+                }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 8).fill(Theme.lime.opacity(0.08)))
+            }
+            if let output = job.output, let analysis = job.analysis, job.alreadyGood == nil {
                 let evened = (job.clipGain ?? []).filter { $0.isAuto == true }.count
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1033,7 +1040,7 @@ struct StateBadge: View {
         let (text, color): (String, Color) = {
             switch job.status {
             case .working: return ("\(Int(job.progress * 100))%", Theme.bone)
-            case .ready: return ("Ready", Theme.teal)
+            case .ready: return job.alreadyGood != nil ? ("Already good", Theme.lime) : ("Ready", Theme.teal)
             case .review:
                 if let short = job.output?.shortfall, short > 0.05 { return (String(format: "%.1f under", short), Theme.amber) }
                 return ("Check notes", Theme.amber)
