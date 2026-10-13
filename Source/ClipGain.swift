@@ -132,7 +132,7 @@ extension ClipGain {
     /// Finds stretches whose loudness sits clearly above or below the cue's typical level and returns sections that bring
     /// them back. `momentary` holds 400 ms loudness readings every 100 ms. Pauses are ignored when judging a stretch, and
     /// fades sit in the quiet around it. Sections never overlap `avoiding` (sections drawn by hand).
-    static func evenOut(momentary m: [Double], duration: Double, tolerance: Double = evenOutTolerance, avoiding: [GainRegion] = []) -> [GainRegion] {
+    static func evenOut(momentary m: [Double], duration: Double, tolerance: Double = evenOutTolerance, avoiding: [GainRegion] = [], peaks: [Float]? = nil) -> [GainRegion] {
         let step = 0.1
         guard m.count > 20 else { return [] }
         func energy(_ v: Double) -> Double { pow(10, v / 10) }
@@ -178,9 +178,14 @@ extension ClipGain {
             gain = min(evenOutMaxBoost, max(-evenOutMaxCut, gain))
             guard abs(gain) >= tolerance * 0.75 else { continue }
             // Readings mark the end of a 400 ms window: the stretch starts about one reading before the first and ends
-            // about 0.35 s before the last. Fades sit just outside it.
-            let start = max(0, Double(first) * step - 0.15), end = min(duration, Double(last + 1) * step - 0.15)
-            var region = GainRegion(start: start, end: end, gain: gain, fadeIn: 0.15, fadeOut: 0.2)
+            // about 0.35 s before the last. No fades: the change is moved into the quietest moment nearby (the pause between
+            // speakers) and uses only a 5 ms click guard, so the level simply is right from that point on.
+            var start = max(0, Double(first) * step - 0.05), end = min(duration, Double(last + 1) * step - 0.3)
+            if let peaks {
+                start = quietest(near: start, from: start - 0.6, to: start + 0.1, peaks: peaks, duration: duration)
+                end = quietest(near: end, from: end - 0.1, to: end + 0.6, peaks: peaks, duration: duration)
+            }
+            var region = GainRegion(start: start, end: end, gain: gain, fadeIn: CueEdit.clickGuard, fadeOut: CueEdit.clickGuard)
             region.isAuto = true
             region = region.normalized(duration: duration)
             // Back-to-back stretches: start this one where the previous one ends.
@@ -241,6 +246,18 @@ extension ClipGain {
         return result
     }
 
+    /// The quietest moment between `from` and `to` (within 1 dB of the lowest peak, the one nearest `t`).
+    static func quietest(near t: Double, from: Double, to: Double, peaks: [Float], duration: Double) -> Double {
+        guard !peaks.isEmpty, duration > 0 else { return t }
+        let perSecond = Double(peaks.count) / duration
+        let lo = max(0, Int(max(0, from) * perSecond)), hi = min(peaks.count - 1, Int(min(duration, to) * perSecond))
+        guard lo <= hi, let floor = peaks[lo...hi].min() else { return t }
+        let limit = max(floor * 1.122, floor + 1e-6)
+        let centre = Int(t * perSecond)
+        var best = -1
+        for k in lo...hi where peaks[k] <= limit { if best < 0 || abs(k - centre) < abs(best - centre) { best = k } }
+        return best < 0 ? t : (Double(best) + 0.5) / perSecond
+    }
     /// Nearest quiet moment (lowest peak) to `t` within ±`window` seconds, from a fine waveform covering `duration`.
     static func snapToQuiet(_ t: Double, peaks: [Float], duration: Double, window: Double = 0.06) -> Double {
         guard !peaks.isEmpty, duration > 0 else { return t }

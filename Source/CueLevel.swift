@@ -132,6 +132,8 @@ struct Waveform: View {
     let peaks: [Float]
     var curve: [Float] = []
     var target: Double? = nil
+    /// Where good references of this content sit (short-term LUFS), drawn as a band behind the loudness line.
+    var good: ClosedRange<Double>? = nil
     let position: Double
     let duration: Double
     let seek: (Double) -> Void
@@ -152,6 +154,14 @@ struct Waveform: View {
                     context.fill(wave, with: .linearGradient(Gradient(colors: [Theme.teal.opacity(0.9), Theme.teal.opacity(0.5), Theme.teal.opacity(0.9)]), startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height)))
                 }
                 func y(_ value: Double) -> Double { size.height * (1 - (max(-60, min(0, value)) + 60) / 60) }
+                if let good, curve.count > 1 {
+                    let band = CGRect(x: 0, y: y(good.upperBound), width: size.width, height: max(2, y(good.lowerBound) - y(good.upperBound)))
+                    context.fill(Path(band), with: .color(Theme.lime.opacity(0.10)))
+                    var edges = Path()
+                    edges.move(to: CGPoint(x: 0, y: band.minY)); edges.addLine(to: CGPoint(x: size.width, y: band.minY))
+                    edges.move(to: CGPoint(x: 0, y: band.maxY)); edges.addLine(to: CGPoint(x: size.width, y: band.maxY))
+                    context.stroke(edges, with: .color(Theme.lime.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [2, 4]))
+                }
                 if curve.count > 1 {
                     if let target {
                         var line = Path(); line.move(to: CGPoint(x: 0, y: y(target))); line.addLine(to: CGPoint(x: size.width, y: y(target)))
@@ -505,13 +515,18 @@ struct ContentView: View {
                     HStack(spacing: 14) {
                         HStack(spacing: 6) { Capsule().fill(Theme.amber).frame(width: 14, height: 2); Text("Short-term loudness") }
                         HStack(spacing: 6) { Capsule().fill(Theme.bone.opacity(0.55)).frame(width: 14, height: 1); Text("Target \(lufs(model.settings.target))") }
+                        if model.goodBand(target: model.settings.target) != nil {
+                            HStack(spacing: 6) { RoundedRectangle(cornerRadius: 2).fill(Theme.lime.opacity(0.35)).frame(width: 14, height: 8); Text("Good range") }
+                                .help("Where your approved \(model.settings.mode.rawValue) references sit over time. Loudness inside the band sounds like good material.")
+                        }
                     }.font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                 }
             }
             if model.clipEditing, let analysis = job.analysis {
                 ClipGainEditor(job: job, analysis: analysis)
             } else {
-                Waveform(peaks: model.currentWaveform, curve: model.currentCurve, target: job.output?.settings.target ?? model.settings.target, position: model.playhead, duration: model.duration, seek: model.seek)
+                Waveform(peaks: model.currentWaveform, curve: model.currentCurve, target: job.output?.settings.target ?? model.settings.target,
+                         good: model.goodBand(target: job.output?.settings.target ?? model.settings.target), position: model.playhead, duration: model.duration, seek: model.seek)
             }
             HStack(spacing: 12) {
                 Button { model.playPause() } label: {
@@ -605,6 +620,10 @@ struct ContentView: View {
                 Button("Import library…") { model.importReferenceLibrary() }.buttonStyle(CLButton()).disabled(model.busy)
             } else if let check = model.referenceCheck(for: job) {
                 ForEach(check.findings, id: \.self) { note($0.text, good: !$0.needsAttention) }
+                if let analysis = job.analysis, let cue = model.cueSpread(analysis), let good = check.span?.spread {
+                    let inRange = cue <= good.upperBound + 1
+                    note("Moves \(String(format: "%.1f", cue)) LU between quieter and louder stretches; good \(check.mode.rawValue) moves \(String(format: "%.1f–%.1f", good.lowerBound, good.upperBound)) LU.\(inRange ? "" : " Even out will bring the outliers back.")", good: inRange)
+                }
                 if let approach = check.approach, let proposed = check.recommendedSettings(from: model.settings), model.settings.format != .lossless {
                     let changes = ReferenceCheck.describeChanges(from: model.settings, to: proposed)
                     HStack {
@@ -812,6 +831,13 @@ struct ContentView: View {
                         }
                     }.padding(.top, 4)
                 } label: { Text("Catalogue (\(model.references.records.count))").font(.system(size: 12.5)).foregroundStyle(Theme.text) }
+                if let span = model.references.span(for: model.settings.mode), let spread = span.spread {
+                    Text("Good \(model.settings.mode.rawValue) moves \(String(format: "%.1f–%.1f", spread.lowerBound, spread.upperBound)) LU between quieter and louder stretches (\(span.shapeCount) reference\(span.shapeCount == 1 ? "" : "s")). Even out keeps cues within ±\(String(format: "%g", model.references.evenOutTolerance(for: model.settings.mode))) dB.").hint()
+                }
+                if model.referencesMissingShapes > 0 {
+                    Button("Measure reference shapes… (\(model.referencesMissingShapes) missing)") { model.measureReferenceShapes() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)
+                        .help("Read your reference recordings once to learn how good material moves over time. Nothing is copied.")
+                }
                 Toggle(isOn: $model.autoRecommend) { Text("Apply each cue's recommendation").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
                 Text("When processing (not in lossless mode), each cue gets Preserve or Gentle correction based on your approved references.").hint()
             }

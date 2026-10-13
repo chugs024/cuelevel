@@ -502,7 +502,17 @@ enum AudioEngine {
     /// Even out: clip gain sections that bring clearly loud or quiet stretches back to the cue's typical level.
     static func evenOutRegions(_ input: URL, info: MediaInfo, tolerance: Double = ClipGain.evenOutTolerance, keeping existing: [GainRegion], token: Cancellation) throws -> [GainRegion] {
         let curve = try momentaryLoudness(input, duration: info.duration, token: token)
-        return ClipGain.evenOut(momentary: curve.map(Double.init), duration: info.duration, tolerance: tolerance, avoiding: existing)
+        let peaks = try detailWaveform(input, duration: info.duration, token: token)
+        return ClipGain.evenOut(momentary: curve.map(Double.init), duration: info.duration, tolerance: tolerance, avoiding: existing, peaks: peaks)
+    }
+    /// Short-term (3 s) loudness every 100 ms across the whole file (not thinned), for reference shapes.
+    static func shortTermLoudness(_ input: URL, duration: Double, token: Cancellation) throws -> [Float] {
+        let collector = CurveCollector(key: "lavfi.r128.S")
+        try run(["-i", input.path, "-map", "0:a:0", "-vn", "-af", "aformat=channel_layouts=stereo,ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.S:file=-", "-f", "null", "-"], token: token, duration: duration, output: { collector.consume($0) })
+        return collector.values
+    }
+    static func loudnessProfile(_ input: URL, duration: Double, token: Cancellation) throws -> LoudnessProfile? {
+        LoudnessProfile(shortTerm: try shortTermLoudness(input, duration: duration, token: token).map(Double.init))
     }
     static func gapRegions(_ input: URL, info: MediaInfo, depth: Double, token: Cancellation) throws -> [GainRegion] {
         let curve = try momentaryLoudness(input, duration: info.duration, token: token)

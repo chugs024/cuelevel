@@ -512,6 +512,25 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         check(lines.count == 2 && lines[0].text == "Hello everyone." && lines[1].start == 3.0, "transcript lines: \(lines)")
         check(try JSONDecoder().decode(CueEdit.self, from: Data(#"{"removeDC":true,"polarity":"Flip left"}"#.utf8)).polarity == .left, "repair fields decode")
         print("PASS: section effects, lower gaps, snap, repairs, versions, transcript lines")
+
+        // 30. 1.7: Even out without fades (changes in the quiet), reference shapes, tolerance from good material.
+        check(auto[0].fadeIn == CueEdit.clickGuard && auto[0].fadeOut == CueEdit.clickGuard, "even out uses only a click guard")
+        var pausePeaks = [Float](repeating: 0.4, count: 2000)                  // 10 s at 200 points per second
+        for k in 760..<800 { pausePeaks[k] = 0.001 }                           // pause 3.8–4.0 s
+        check(Swift.abs(ClipGain.quietest(near: 4.1, from: 3.5, to: 4.2, peaks: pausePeaks, duration: 10) - 3.9975) < 0.01, "change lands at the edge of the pause nearest the estimate")
+        let profile = LoudnessProfile(shortTerm: (0..<200).map { i in i < 20 ? -70 : -20 + Double(i % 10) - 4.5 })!
+        check(near(profile.p50, -20.5, 0.6) && near(profile.spread, 8, 1.1), "profile percentiles: \(profile)")
+        check(LoudnessProfile(shortTerm: [Double](repeating: -70, count: 50)) == nil, "silence has no profile")
+        let shapes = area.appendingPathComponent("shapes")
+        var shaped = try ReferenceLibrary.install(from: libraryFolder, into: shapes)
+        check(shaped.span(for: .voice)?.spread == nil && shaped.evenOutTolerance(for: .voice) == 2, "no shapes: default tolerance")
+        let voiceShas = shaped.references(for: .voice).map { $0.sha256.lowercased() }
+        var p1 = profile; p1.spread = 6; var p2 = profile; p2.spread = 7.4; p2.p10 = p2.p50 - 4; p2.p90 = p2.p50 + 3.4
+        shaped = try ReferenceLibrary.setProfiles([voiceShas[0]: p1, voiceShas[1]: p2], in: shapes)
+        let vspan = shaped.span(for: .voice)!
+        check(vspan.shapeCount == 2 && vspan.spread == 6...7.4 && near(vspan.shape!.lowerBound, -4) && shaped.evenOutTolerance(for: .voice) == 3.5, "shapes set tolerance: \(vspan) \(shaped.evenOutTolerance(for: .voice))")
+        check(try sha(libraryFolder.appendingPathComponent("library.json")) == libraryHash, "source library untouched by shapes")
+        print("PASS: even out without fades, reference shapes and tolerance")
         print("ALL 1.1 TESTS PASSED")
     }
 }

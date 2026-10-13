@@ -16,6 +16,24 @@ struct ReferenceBand: Codable, Sendable, Equatable {
     var highHz: Double
     var powerFraction: Double
 }
+/// The shape of a cue's loudness over time (1.7): short-term (3 s) loudness percentiles, ignoring pauses.
+/// `spread` (P90 − P10, in LU) says how much the level moves between quieter and louder stretches.
+struct LoudnessProfile: Codable, Sendable, Equatable {
+    var p10: Double
+    var p50: Double
+    var p90: Double
+    var spread: Double
+    init?(shortTerm values: [Double]) {
+        let audible = values.filter { $0 > -69.9 }
+        guard audible.count >= 10 else { return nil }
+        let peakish = audible.sorted()[Int(Double(audible.count - 1) * 0.95)]
+        let gated = audible.filter { $0 > peakish - 20 }.sorted()   // ignore pauses and fades
+        guard gated.count >= 10 else { return nil }
+        func pct(_ q: Double) -> Double { gated[Int((Double(gated.count - 1) * q).rounded())] }
+        p10 = pct(0.1); p50 = pct(0.5); p90 = pct(0.9); spread = p90 - p10
+    }
+}
+
 struct ReferenceRecord: Codable, Sendable, Equatable, Identifiable {
     var id: String
     var name: String
@@ -31,6 +49,7 @@ struct ReferenceRecord: Codable, Sendable, Equatable, Identifiable {
     var crestFactorDb: Double?
     var uncentredStereoCorrelation: Double?
     var spectrum: [ReferenceBand]?
+    var loudnessProfile: LoudnessProfile?
     var mode: ContentMode? { category.flatMap { ContentMode(rawValue: $0) } }
 }
 struct ReferenceLibraryFile: Codable, Sendable {
@@ -52,6 +71,11 @@ struct ReferenceSpan: Sendable, Equatable {
     var loudness: ClosedRange<Double>
     var loudnessRange: ClosedRange<Double>
     var crest: ClosedRange<Double>?
+    /// Short-term spread (P90 − P10) of the references that have a measured shape, and their quiet/loud stretches
+    /// relative to their median (for the Good range band). nil until shapes are measured.
+    var spread: ClosedRange<Double>? = nil
+    var shape: ClosedRange<Double>? = nil
+    var shapeCount = 0
 }
 
 struct ReferenceLibrary: Sendable {
@@ -68,12 +92,22 @@ struct ReferenceLibrary: Sendable {
         guard !group.isEmpty else { return nil }
         func spread(_ values: [Double]) -> ClosedRange<Double> { values.min()! ... values.max()! }
         let crests = group.compactMap(\.crestFactorDb)
+        let profiles = group.compactMap(\.loudnessProfile)
         return ReferenceSpan(count: group.count,
                              loudness: spread(group.map(\.cuelevelStereo.integratedLufs)),
                              loudnessRange: spread(group.map(\.cuelevelStereo.loudnessRangeLu)),
-                             crest: crests.isEmpty ? nil : spread(crests))
+                             crest: crests.isEmpty ? nil : spread(crests),
+                             spread: profiles.isEmpty ? nil : spread(profiles.map(\.spread)),
+                             shape: profiles.isEmpty ? nil : (profiles.map { $0.p10 - $0.p50 }.min()! ... profiles.map { $0.p90 - $0.p50 }.max()!),
+                             shapeCount: profiles.count)
     }
 
+    /// How tightly Even out works for this content: half the widest P10–P90 spread of your good references
+    /// (so a cue is evened only where it moves more than good material does), between 1.5 and 4 dB. 2 dB without shapes.
+    func evenOutTolerance(for mode: ContentMode) -> Double {
+        guard let widest = span(for: mode)?.spread?.upperBound else { return ClipGain.evenOutTolerance }
+        return (min(4, max(1.5, widest / 2)) * 2).rounded() / 2
+    }
     var summary: String {
         guard !isEmpty else { return "No reference library loaded." }
         let parts = ContentMode.allCases.map { mode -> String in "\(references(for: mode).count) \(mode.rawValue)" }
@@ -134,7 +168,7 @@ struct ReferenceLibrary: Sendable {
 // never copied; only its SHA-256, name and measurements are stored, exactly like the imported references.
 extension ReferenceLibrary {
     /// One new library record (snake_case keys, the same shape as the imported library.json).
-    static func record(for analysis: Analysis, name: String, sha256: String, category: ContentMode, note: String, version: String, date: Date = Date()) -> [String: Any] {
+    static func record(for analysis: Analysis, name: String, sha256: String, category: ContentMode, note: String, version: String, date: Date = Date(), profile: LoudnessProfile? = nil) -> [String: Any] {
         let levels: [String: Any] = ["integrated_lufs": analysis.levels.integrated, "true_peak_dbtp": analysis.levels.truePeak, "loudness_range_lu": analysis.levels.loudnessRange]
         var record: [String: Any] = [
             "id": String(sha256.prefix(16)), "name": name, "sha256": sha256, "bytes": analysis.info.byteCount,
@@ -149,6 +183,7 @@ extension ReferenceLibrary {
         if let peak = analysis.levels.samplePeak { record["sample_peak_dbfs"] = peak }
         if let crest = analysis.levels.crestFactor { record["crest_factor_db"] = crest }
         if let correlation = analysis.stereo?.correlation { record["uncentred_stereo_correlation"] = correlation }
+        if let profile { record["loudness_profile"] = profileJSON(profile) }
         return record
     }
 
@@ -192,6 +227,19 @@ extension ReferenceLibrary {
         return try load(from: folder)
     }
 
+    static func profileJSON(_ p: LoudnessProfile) -> [String: Any] { ["p10": p.p10, "p50": p.p50, "p90": p.p90, "spread": p.spread] }
+    /// Stores measured shapes for records matched by SHA-256 (other records and fields untouched).
+    static func setProfiles(_ profiles: [String: LoudnessProfile], in folder: URL) throws -> ReferenceLibrary {
+        let libraryURL = folder.appendingPathComponent(libraryFile)
+        guard var library = try readJSON(libraryURL) else { throw cueError("Import your reference library first.") }
+        var records = library["records"] as? [[String: Any]] ?? []
+        for i in records.indices {
+            if let sha = (records[i]["sha256"] as? String)?.lowercased(), let p = profiles[sha] { records[i]["loudness_profile"] = profileJSON(p) }
+        }
+        library["records"] = records
+        try writeJSON(library, to: libraryURL)
+        return try load(from: folder)
+    }
     /// Removes one reference (by its record id) from the installed library. The recording itself is not touched.
     static func remove(id: String, from folder: URL) throws -> ReferenceLibrary {
         let libraryURL = folder.appendingPathComponent(libraryFile)

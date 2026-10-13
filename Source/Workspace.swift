@@ -249,7 +249,8 @@ struct ExportReport: Codable {
                         let all = jobs.first(where: { $0.id == id })?.clipGain ?? []
                         let manual = all.filter { $0.isAuto != true }, keep = all.filter { $0.isAuto != true || $0.isGap == true }
                         let source = current.source, info = analysis.info
-                        let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, keeping: manual, token: cancellation) }.value
+                        let tolerance = references.evenOutTolerance(for: options.mode)
+                        let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: cancellation) }.value
                         update(id) { $0.clipGain = keep + auto }
                         evened = auto.count
                     }
@@ -419,7 +420,8 @@ struct ExportReport: Codable {
         Task {
             defer { measuringSection = false }
             do {
-                let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, keeping: manual, token: Cancellation()) }.value
+                let tolerance = references.evenOutTolerance(for: settings.mode)
+                let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: Cancellation()) }.value
                 setRegions(keep + auto)
                 status = auto.isEmpty ? "Already even: nothing is more than \(Int(ClipGain.evenOutTolerance)) dB from the typical level" : "Even out made \(auto.count) section\(auto.count == 1 ? "" : "s"). Adjust any of them, then click Done editing."
             } catch { self.error = error.localizedDescription }
@@ -553,6 +555,51 @@ struct ExportReport: Codable {
     }
     func fixDCOffset() { var e = selectedEdit; e.removeDC = true; setEdit(e); status = "DC offset will be removed when the cue is levelled" }
     func fixPolarity(_ fix: PolarityFix) { var e = selectedEdit; e.polarity = fix; setEdit(e); status = fix == .none ? "Polarity normal" : "\(fix.rawValue) when the cue is levelled" }
+
+    // MARK: Reference shapes — what good sounds like over time (1.7)
+    /// The band where good references of this content type sit, relative to the target (short-term LUFS).
+    func goodBand(target: Double) -> ClosedRange<Double>? {
+        guard let shape = references.span(for: settings.mode)?.shape else { return nil }
+        return (target + shape.lowerBound) ... (target + shape.upperBound)
+    }
+    /// This cue's short-term spread (P90 − P10) from its loudness curve.
+    func cueSpread(_ analysis: Analysis) -> Double? { analysis.loudnessCurve.flatMap { LoudnessProfile(shortTerm: $0.map(Double.init)) }?.spread }
+    var referencesMissingShapes: Int { references.records.filter { $0.loudnessProfile == nil }.count }
+    /// Measures the loudness shape of reference recordings in a folder, matched to the library by fingerprint.
+    /// Recordings are only read; nothing is copied.
+    func measureReferenceShapes() {
+        guard !busy else { return }
+        guard !references.isEmpty else { error = "Import your reference library first (References › Import library…)."; return }
+        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        panel.message = "Choose the folder with your reference recordings. CueLevel matches them to the library by fingerprint and only reads them."
+        let handoff = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/CueLevel-Handoff-2026-10-10/Reference Audio", isDirectory: true)
+        if FileManager.default.fileExists(atPath: handoff.path) { panel.directoryURL = handoff }
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        let wanted = Set(references.records.map { $0.sha256.lowercased() }), libraryFolder = referenceFolder
+        busy = true; status = "Measuring reference shapes…"
+        let token = Cancellation(); self.token = token
+        Task {
+            defer { busy = false; self.token = nil }
+            do {
+                let result = try await Task.detached { () -> (ReferenceLibrary, Int) in
+                    let files = (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey])?.allObjects as? [URL] ?? [])
+                        .filter { mediaExtensions.contains($0.pathExtension.lowercased()) }
+                    var profiles: [String: LoudnessProfile] = [:]
+                    for file in files {
+                        try token.check()
+                        let sha = try Updater.sha256(of: file)
+                        guard wanted.contains(sha) else { continue }
+                        let info = try AudioEngine.inspect(file, token: token)
+                        if let p = try AudioEngine.loudnessProfile(file, duration: info.duration, token: token) { profiles[sha] = p }
+                    }
+                    return (try ReferenceLibrary.setProfiles(profiles, in: libraryFolder), profiles.count)
+                }.value
+                references = result.0
+                status = result.1 == 0 ? "No recordings in that folder match your references" : "Measured the shape of \(result.1) reference\(result.1 == 1 ? "" : "s")"
+            } catch is CancellationError { status = "Stopped" }
+            catch { self.error = error.localizedDescription }
+        }
+    }
 
     // MARK: Live meter (1.5)
     func loadMeterCurve(for url: URL, duration: Double) {
@@ -721,7 +768,8 @@ struct ExportReport: Codable {
                 guard FileManager.default.isReadableFile(atPath: source.path) else { throw cueError("The original file is no longer at \(source.path). Add it again, then add it as a reference.") }
                 let library = try await Task.detached {
                     let sha = try Updater.sha256(of: source)
-                    let record = ReferenceLibrary.record(for: analysis, name: source.lastPathComponent, sha256: sha, category: category, note: note, version: appShortVersion)
+                    let profile = try AudioEngine.loudnessProfile(source, duration: analysis.info.duration, token: Cancellation())
+                    let record = ReferenceLibrary.record(for: analysis, name: source.lastPathComponent, sha256: sha, category: category, note: note, version: appShortVersion, profile: profile)
                     return try ReferenceLibrary.add(record, into: folder)
                 }.value
                 references = library
