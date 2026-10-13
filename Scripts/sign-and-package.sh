@@ -40,7 +40,9 @@ xcrun stapler staple "$DMG"
 echo "== Verify"
 spctl -a -t open --context context:primary-signature -vv "$DMG"
 MOUNT="$(mktemp -d)"; hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG" >/dev/null
-spctl -a -vv "$MOUNT/CueLevel.app"; xcrun stapler validate "$MOUNT/CueLevel.app"
+spctl -a -vv "$MOUNT/CueLevel.app"
+# Apple's ticket lookup occasionally drops the connection; retry a few times before failing.
+for attempt in 1 2 3 4 5; do xcrun stapler validate "$MOUNT/CueLevel.app" && break; [[ $attempt == 5 ]] && exit 1; sleep $((attempt * 10)); done
 codesign --verify --deep --strict -R='anchor apple generic and certificate leaf[subject.OU] = "327ABFB3W2"' "$MOUNT/CueLevel.app"
 hdiutil detach "$MOUNT" >/dev/null
 echo "✓ $DMG"
