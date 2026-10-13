@@ -519,7 +519,7 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         for k in 760..<800 { pausePeaks[k] = 0.001 }                           // pause 3.8–4.0 s
         check(Swift.abs(ClipGain.quietest(near: 4.1, from: 3.5, to: 4.2, peaks: pausePeaks, duration: 10) - 3.9975) < 0.01, "change lands at the edge of the pause nearest the estimate")
         let profile = LoudnessProfile(shortTerm: (0..<200).map { i in i < 20 ? -70 : -20 + Double(i % 10) - 4.5 })!
-        check(near(profile.p50, -20.5, 0.6) && near(profile.spread, 8, 1.1), "profile percentiles: \(profile)")
+        check(near(profile.p50, -19.5, 0.01) && near(profile.spread, 7, 0.01), "profile percentiles: \(profile)")
         check(LoudnessProfile(shortTerm: [Double](repeating: -70, count: 50)) == nil, "silence has no profile")
         let shapes = area.appendingPathComponent("shapes")
         var shaped = try ReferenceLibrary.install(from: libraryFolder, into: shapes)
