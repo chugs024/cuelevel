@@ -60,7 +60,7 @@ struct ContentView: View {
         .sheet(isPresented: $updater.showSheet) { updateSheet }
         .sheet(isPresented: $model.showShortcuts) { ShortcutSheet { model.showShortcuts = false } }
         .sheet(isPresented: Binding(get: { model.referenceDraft != nil }, set: { if !$0 { model.referenceDraft = nil } })) { referenceSheet }
-        .background { Button("") { setEditing(!model.clipEditing) }.keyboardShortcut("e").opacity(0).disabled(model.selected?.analysis == nil || model.busy) }
+        .background { Button("") { setEditing(!model.clipEditing) }.keyboardShortcut("e").opacity(0).disabled(!model.clipEditing && (model.selected?.analysis == nil || model.busy)) }
     }
 
     /// Prepare ↔ Edit. Leaving Edit levels the cue again when the edits changed what it would sound like.
@@ -95,7 +95,7 @@ struct ContentView: View {
             HStack(spacing: 8) { LogoMark().frame(width: 22, height: 22); Text("CueLevel").font(.system(size: 14.5, weight: .semibold)) }
                 .onTapGesture(count: 2) { model.showAbout = true }.help("About CueLevel")
             Segments(options: [(false, "Prepare"), (true, "Edit")], selection: Binding(get: { model.clipEditing }, set: { setEditing($0) }))
-                .frame(width: 168).disabled(model.selected?.analysis == nil || model.busy)
+                .frame(width: 168).disabled(!model.clipEditing && (model.selected?.analysis == nil || model.busy))   // leaving Edit is always allowed
                 .help("Prepare levels cues. Edit opens the clip gain editor for the selected cue (⌘E).")
                 .padding(.leading, 14)
             if let feed = updater.offered, updater.available != nil || updater.isWorking {
@@ -320,7 +320,7 @@ struct ContentView: View {
             Slider(value: Binding(get: { min(model.duration, model.playhead) }, set: { model.seek($0) }), in: 0 ... max(0.01, model.duration)).controlSize(.small).accessibilityLabel("Playback position").disabled(model.duration == 0)
             Text(clockText(model.duration)).monospacedDigit()
             LoudnessMeterBar(reading: model.meterReading(at: model.playhead), target: job.output?.settings.target ?? model.settings.target, ready: !model.meterCurve.isEmpty)
-                .frame(width: 330)
+                .frame(minWidth: 300, maxWidth: 380)
             Toggle("Match", isOn: $model.matchPreview).toggleStyle(.checkbox).onChange(of: model.matchPreview) { _ in model.applyVolume() }.disabled(job.output == nil)
                 .help("Plays the original and levelled versions at equal loudness, so you compare sound, not volume")
         }.font(.system(size: 12)).foregroundStyle(Theme.muted)
@@ -727,18 +727,31 @@ struct Waveform: View {
                     }
                 }
                 if !peaks.isEmpty {
-                    var wave = Path(), before = Path()
-                    let step = size.width / Double(peaks.count)
-                    for (index, peak) in peaks.enumerated() {
-                        let t = (Double(index) + 0.5) / Double(peaks.count) * duration
+                    // 2.0.1: one bar per pixel column at most, drawn as a filled envelope (thin bars on a fractional grid made moiré stripes).
+                    let columns = max(1, min(peaks.count, Int(size.width)))
+                    let width = size.width / Double(columns)
+                    var top: [CGPoint] = [], baseTop: [CGPoint] = []
+                    var anyEdit = false
+                    for c in 0..<columns {
+                        let lo = c * peaks.count / columns, hi = max(lo + 1, (c + 1) * peaks.count / columns)
+                        let peak = Double(peaks[lo..<min(hi, peaks.count)].max() ?? 0)
+                        let t = (Double(c) + 0.5) / Double(columns) * duration
                         let m = edits.isEmpty ? 1 : ClipGain.multiplier(at: t, regions: edits)
-                        let base = max(1, min(1, pow(Double(peak), 0.6)) * (middle - 8))
-                        let height = max(1, min(1, pow(Double(peak) * m, 0.6)) * (middle - 8))
-                        if m != 1 { before.addRect(CGRect(x: Double(index) * step, y: middle - base, width: max(1, step * 0.62), height: base * 2)) }
-                        wave.addRoundedRect(in: CGRect(x: Double(index) * step, y: middle - height, width: max(1, step * 0.62), height: height * 2), cornerSize: CGSize(width: 0.8, height: 0.8))
+                        if m != 1 { anyEdit = true }
+                        let x = (Double(c) + 0.5) * width
+                        top.append(CGPoint(x: x, y: middle - max(0.75, min(1, pow(peak * m, 0.6)) * (middle - 8))))
+                        baseTop.append(CGPoint(x: x, y: middle - max(0.75, min(1, pow(peak, 0.6)) * (middle - 8))))
                     }
-                    context.fill(before, with: .color(Theme.muted.opacity(0.22)))
-                    context.fill(wave, with: .color(Theme.bone.opacity(0.82)))
+                    func envelope(_ points: [CGPoint]) -> Path {
+                        var p = Path(); guard let first = points.first else { return p }
+                        p.move(to: CGPoint(x: 0, y: first.y)); points.forEach { p.addLine(to: $0) }
+                        p.addLine(to: CGPoint(x: size.width, y: points.last!.y))
+                        p.addLine(to: CGPoint(x: size.width, y: 2 * middle - points.last!.y))
+                        points.reversed().forEach { p.addLine(to: CGPoint(x: $0.x, y: 2 * middle - $0.y)) }
+                        p.addLine(to: CGPoint(x: 0, y: 2 * middle - first.y)); p.closeSubpath(); return p
+                    }
+                    if anyEdit { context.fill(envelope(baseTop), with: .color(Theme.muted.opacity(0.22))) }
+                    context.fill(envelope(top), with: .color(Theme.bone.opacity(0.82)))
                 }
                 if curve.count > 1 {
                     if let target {

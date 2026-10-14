@@ -422,6 +422,9 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         var quietStretch = steadyCurve; for i in 80..<130 { quietStretch[i] = -27 }
         let lifted = ClipGain.evenOut(momentary: quietStretch, duration: 20)
         check(lifted.count == 1 && near(lifted[0].gain, 7, 0.01), "quiet stretch lifted: \(lifted)")
+        var deepStretch = steadyCurve; for i in 60..<160 { deepStretch[i] = -37 }   // 10 s, 17 dB down: a quiet passage, not a pause
+        let deepLifted = ClipGain.evenOut(momentary: deepStretch, duration: 20)
+        check(deepLifted.count == 1 && near(deepLifted[0].gain, ClipGain.evenOutMaxBoost, 0.01), "long quiet passage lifted (capped): \(deepLifted)")
         var evenSettings = lossless; evenSettings.clipGain = auto
         let unevenAnalysis2 = try AudioEngine.analyze(unevenFile, token: Cancellation()) { _, _ in }
         let evenRender = try AudioEngine.process(unevenFile, analysis: unevenAnalysis2, settings: evenSettings, directory: area.appendingPathComponent("render-even"), token: Cancellation()) { _, _ in }

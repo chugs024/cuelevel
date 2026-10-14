@@ -89,7 +89,7 @@ struct AssistantPanel: View {
             }.buttonStyle(CLButton(kind: .hero)).keyboardShortcut("l").disabled(model.busy)
             HStack(spacing: 8) {
                 Button { model.playPause() } label: { Label(model.playing ? "Pause" : "Listen", systemImage: model.playing ? "pause.fill" : "play.fill").frame(maxWidth: .infinity) }.buttonStyle(CLButton())
-                Button { setEditing(true) } label: { Text("Edit by hand").frame(maxWidth: .infinity) }.buttonStyle(CLButton())
+                Button { setEditing(true) } label: { Text("Edit by hand").frame(maxWidth: .infinity) }.buttonStyle(CLButton()).disabled(model.busy)
             }
         }.padding(.top, 4)
     }
@@ -187,7 +187,7 @@ struct AssistantPanel: View {
             HStack(spacing: 8) {
                 Button { compare() } label: { Label("Before / after", systemImage: "arrow.left.arrow.right").frame(maxWidth: .infinity) }.buttonStyle(CLButton())
                     .help("Switches between the original and the levelled cue at matched loudness")
-                Button { setEditing(true) } label: { Text("Edit by hand").frame(maxWidth: .infinity) }.buttonStyle(CLButton())
+                Button { setEditing(true) } label: { Text("Edit by hand").frame(maxWidth: .infinity) }.buttonStyle(CLButton()).disabled(model.busy)
             }
             HStack(spacing: 8) {
                 Button { model.exportSelected() } label: { Text("Save a copy…").frame(maxWidth: .infinity) }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)

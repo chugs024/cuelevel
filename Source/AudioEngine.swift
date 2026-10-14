@@ -700,7 +700,7 @@ enum AudioEngine {
             if analysis.levels.truePeak >= 0 { warnings.append("Source reaches full scale. Existing distortion may remain.") }
             if clipFilter != nil, sourceLevels.truePeak > 0 { warnings.append("Clip gain pushed peaks over full scale (\(f(sourceLevels.truePeak)) dBTP) before levelling. The levelling gain brings them back down; lower the boosted sections if the output still sounds harsh.") }
             if info.channels > 2 { warnings.append("Surround source downmixed to stereo; the downmix is not lossless.") }
-            if let n = info.audioStreams, n > 1 { warnings.append(info.isVideo ? "\(n) audio tracks: the first is levelled, the other \(n - 1) are copied untouched." : "Only the first of \(n) audio tracks is kept: WAV holds one track.") }
+            if let n = info.audioStreams, n > 1 { warnings.append(info.isVideo ? (n == 2 ? "2 audio tracks: the first is levelled, the second is copied untouched." : "\(n) audio tracks: the first is levelled, the other \(n - 1) are copied untouched.") : "Only the first of \(n) audio tracks is kept: WAV holds one track.") }
             if ext == "mkv" { warnings.append("Saved as MKV so every stream could be copied untouched. Resolume may not open MKV; supply MOV or MP4 sources for playback files.") }
             progress(0.96, "Tracing loudness over time")
             let curve = try loudnessCurve(output, duration: info.duration, token: token)

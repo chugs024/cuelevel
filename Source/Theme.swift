@@ -218,8 +218,8 @@ struct LoudnessMeterBar: View {
                     if let s = reading.shortTerm { Rectangle().fill(Theme.bone).frame(width: 2, height: 12).offset(x: x(s) - 1) }
                     Rectangle().fill(Theme.bone.opacity(0.6)).frame(width: 1.5, height: 14).offset(x: x(target))
                 }
-            }.frame(height: 8)
-            meterValue("Now", reading.momentary, "LUFS")
+            }.frame(minWidth: 70, maxWidth: .infinity).frame(height: 8)
+            meterValue("Now", reading.momentary, nil)
             meterValue("3 s", reading.shortTerm, "LUFS")
             meterValue("Peak", reading.peak, "dB", warn: (reading.peak ?? -100) > -1)
         }
@@ -227,11 +227,11 @@ struct LoudnessMeterBar: View {
         .opacity(ready ? 1 : 0.4)
         .help("Live loudness of what's playing. Now = the last 0.4 s, 3 s = the last three seconds. The white mark is the target.")
     }
-    func meterValue(_ label: String, _ value: Double?, _ unit: String, warn: Bool = false) -> some View {
-        HStack(spacing: 3) {
+    func meterValue(_ label: String, _ value: Double?, _ unit: String?, warn: Bool = false) -> some View {
+        HStack(spacing: 4) {
             Text(label)
-            Text(value.map { lufs($0) } ?? "—").font(.system(size: 12, weight: .semibold)).monospacedDigit().foregroundStyle(warn ? Theme.hot : Theme.bone).frame(minWidth: 38, alignment: .trailing)
-            Text(unit)
-        }
+            Text(value.map { lufs($0) } ?? "—").font(.system(size: 12, weight: .semibold)).monospacedDigit().foregroundStyle(warn ? Theme.hot : Theme.bone).frame(minWidth: 36, alignment: .trailing)
+            if let unit { Text(unit) }
+        }.lineLimit(1).fixedSize()
     }
 }

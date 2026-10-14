@@ -140,8 +140,16 @@ extension ClipGain {
         func median(_ values: [Double]) -> Double? { let s = values.sorted(); return s.isEmpty ? nil : s[s.count / 2] }
         // Gate out silence, then pauses relative to the typical level.
         guard let rough = median(m.filter { $0 > -50 }) else { return [] }
-        let active = m.map { $0 > -50 && $0 > rough - 15 }
+        var active = m.map { $0 > -50 && $0 > rough - 15 }
         guard let reference = median(zip(m, active).filter { $0.1 }.map { $0.0 }) else { return [] }
+        // 2.0.1: a long stretch 15–24 dB down is a quiet passage, not a pause (pauses are short or much quieter).
+        var i = 0
+        while i < m.count {
+            guard !active[i], m[i] > -50, m[i] > rough - 24 else { i += 1; continue }
+            var j = i; while j < m.count, !active[j], m[j] > -50, m[j] > rough - 24 { j += 1 }
+            if Double(j - i) * step >= 3 { for k in i..<j { active[k] = true } }
+            i = j
+        }
         // Phrase loudness: energy mean of active readings within ±0.75 s.
         let radius = 7
         var phrase = [Double?](repeating: nil, count: m.count)
