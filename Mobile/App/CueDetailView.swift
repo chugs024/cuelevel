@@ -35,7 +35,7 @@ struct CueDetailView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(Theme.base.ignoresSafeArea())
-            .navigationTitle(cue.name)
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { load(cue) }
             .onChange(of: cue.outputName) { load(store.cue(id) ?? cue) }

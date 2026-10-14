@@ -167,7 +167,6 @@ final class CueStore: ObservableObject {
             let folder = file.deletingLastPathComponent().lastPathComponent
             cues.append(MobileCue(name: file.deletingPathExtension().lastPathComponent, fileName: folder + "/" + file.lastPathComponent))
         }
-        if selection == nil { selection = cues.first?.id }
         status = "Added \(files.count) cue\(files.count == 1 ? "" : "s"). Measuring…"
         save(); startWorker()
     }

@@ -93,6 +93,22 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         check(speech.stereo?.correlation.map { $0 > 0.999 } == true, "mono reads as identical channels")
         check(speech.info.channels == 1 && speech.info.sampleRate == 44100 && !speech.info.isVideo, "speech file info")
 
+        // A sting: decaying tones every 2 s, 44.1 kHz 16-bit (the simulator run read 0.4 LU apart after Even out).
+        try ffmpeg(["-f", "lavfi", "-i", "aevalsrc='0.9*sin(2*PI*440*t)*exp(-1.5*mod(t,2))|0.9*sin(2*PI*554*t)*exp(-1.5*mod(t,2))':s=44100:d=12", "-c:a", "pcm_s16le", file("sting.wav").path])
+        let (sting, stingData) = try await compare("sting, 44.1 kHz 16-bit", file("sting.wav"))
+        do {
+            var st = ProcessingSettings(); st.target = -18; st.peak = -1; st.format = .lossless
+            let regions = MobileEngine.evenOutPlan(stingData, duration: sting.info.duration, tolerance: ClipGain.evenOutTolerance, keeping: [], skipMusic: false).regions
+            st.clipGain = regions
+            st.edit = CueEdit.trimmedToSound(sting.stereo!, duration: sting.info.duration, keeping: CueEdit())
+            let out = try await MobileEngine.level(file("sting.wav"), analysis: sting, settings: st, directory: area.appendingPathComponent("Sting"))
+            let outInfo = try AudioEngine.inspect(out.url, token: token)
+            let ff = try AudioEngine.measure(out.url, token: token, duration: outInfo.duration)
+            note("sting levelled with \(regions.count) Even out sections: device \(f(out.levels.integrated)) vs FFmpeg \(f(ff.integrated)) LUFS, TP \(f(out.levels.truePeak)) vs \(f(ff.truePeak)), duration \(f(outInfo.duration))")
+            check(near(out.levels.integrated, ff.integrated, 0.15), "levelled sting: the device's verification agrees with FFmpeg")
+            check(near(ff.integrated, -18, 0.25), "levelled sting reaches the target (FFmpeg)")
+        }
+
         print("== Even out: same sections from either engine")
         let ffMomentary = try AudioEngine.momentaryLoudness(file("speech.wav"), duration: speech.info.duration, token: token).map(Double.init)
         let ffPeaks = try AudioEngine.detailWaveform(file("speech.wav"), duration: speech.info.duration, token: token)
