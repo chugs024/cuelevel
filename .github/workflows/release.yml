@@ -94,12 +94,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.UPDATES_TOKEN }}
         run: |
-          gh release create "v$VERSION" "build/CueLevel-$VERSION.dmg" --repo "$UPDATES_REPO" --title "CueLevel $VERSION" --notes-file build/notes.md
+          # LGPL: the exact FFmpeg source and build configuration ship next to every DMG.
+          cp Engine/ffmpeg-7.1.tar.xz build/FFmpeg-7.1-source.tar.xz
+          cp Engine/BUILD.txt build/FFmpeg-build-configuration.txt
+          gh release create "v$VERSION" "build/CueLevel-$VERSION.dmg" build/FFmpeg-7.1-source.tar.xz build/FFmpeg-build-configuration.txt \
+            --repo "$UPDATES_REPO" --title "CueLevel $VERSION" --notes-file build/notes.md
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/$UPDATES_REPO.git" "$RUNNER_TEMP/updates"
           cp build/appcast.json "$RUNNER_TEMP/updates/appcast.json"
           cd "$RUNNER_TEMP/updates"
+          # Website: point the download buttons and version text at this release (the page also reads appcast.json live).
+          if [[ -f docs/index.html ]]; then
+            MB=$(( ($(stat -f%z "$GITHUB_WORKSPACE/build/CueLevel-$VERSION.dmg") + 524288) / 1048576 ))
+            sed -i '' -E "s#releases/download/v[0-9.]+/CueLevel-[0-9.]+\.dmg#releases/download/v$VERSION/CueLevel-$VERSION.dmg#g; s#Version [0-9.]+#Version $VERSION#g; s#CueLevel [0-9]+\.[0-9]+\.[0-9]+\.#CueLevel $VERSION.#g; s#[0-9]+ MB#$MB MB#g" docs/index.html
+            sed -i '' -E "s#releases/download/v[0-9.]+/#releases/download/v$VERSION/#g" docs/licenses.html 2>/dev/null || true
+          fi
           git config user.name "CueLevel release"; git config user.email "releases@users.noreply.github.com"
-          git add appcast.json; git commit -m "CueLevel $VERSION (build $BUILD)"; git push origin HEAD:main
+          git add appcast.json docs; git commit -m "CueLevel $VERSION (build $BUILD)"; git push origin HEAD:main
       - name: Tag source
         run: |
           git config user.name "CueLevel release"; git config user.email "releases@users.noreply.github.com"
