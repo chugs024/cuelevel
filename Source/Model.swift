@@ -33,6 +33,8 @@ struct LosslessPlan: Equatable, Sendable {
         limiting = max(0, gain - allowed)
         shortfall = max(0, wanted - gain)
     }
+    /// Pro (2.1): the gain the person set on the fader, used exactly as it is.
+    init(fixedGain: Double) { gain = fixedGain; shortfall = 0; limiting = 0 }
 }
 enum NoiseMethod: String, Codable, CaseIterable, Identifiable, Sendable {
     case steady = "Steady background", speech = "Speech denoiser"
@@ -115,6 +117,8 @@ struct ProcessingSettings: Codable, Equatable, Sendable {
     /// channels (mono stays mono, 5.1 stays 5.1).
     var foldToStereo: Bool? = nil
     var foldsSurround: Bool { foldToStereo ?? false }
+    /// Pro (2.1): the cue's gain in dB, set by hand on the fader. nil = CueLevel works it out from the target.
+    var manualGain: Double? = nil
     mutating func setMode(_ newMode: ContentMode) {
         mode = newMode
         var leveling = LevelerSettings(); leveling.apply(newMode == .music ? .gentle : newMode == .voice ? .strong : .balanced); leveling.enabled = newMode != .music; levelerOptions = leveling

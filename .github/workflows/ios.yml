@@ -50,6 +50,11 @@ jobs:
             xcrun simctl launch "$UDID" com.cuelevel.app -levelAll; sleep 60; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-4-levelled.png"
             xcrun simctl terminate "$UDID" com.cuelevel.app || true
             for n in 2 3 4; do xcrun simctl launch "$UDID" com.cuelevel.app -select $n; sleep 6; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-5-result-$n.png"; xcrun simctl terminate "$UDID" com.cuelevel.app || true; done
+            # Pro: the editor (unlocked for the simulator with -pro), and the Pro sheet when it isn't.
+            xcrun simctl launch "$UDID" com.cuelevel.app -select 2 -edit -pro; sleep 9; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-6-editor.png"
+            xcrun simctl terminate "$UDID" com.cuelevel.app || true
+            xcrun simctl launch "$UDID" com.cuelevel.app -select 2 -edit; sleep 9; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-7-pro.png"
+            xcrun simctl terminate "$UDID" com.cuelevel.app || true
             DATA=$(xcrun simctl get_app_container "$UDID" com.cuelevel.app data)
             ls -la "$DATA/Documents/Levelled" | tee "$SHOTS/$2-levelled-files.txt"
             for f in "$DATA/Documents/Levelled"/*; do "$PWD/Engine/ffmpeg" -hide_banner -nostats -i "$f" -map 0:a:0 -af loudnorm=I=-18:print_format=summary -f null - 2>&1 | grep -E "Input Integrated|Input True Peak" | sed "s|^|$(basename "$f"): |" | tee -a "$SHOTS/$2-levelled-files.txt"; done
@@ -63,7 +68,7 @@ jobs:
         run: |
           # GitHub keeps annotations to 4 KB each, 10 per step, 50 per job: small WebP images split into parts.
           mkdir -p build/ann; cd build/screens 2>/dev/null || exit 0
-          for f in iphone-*.png ipad-1-empty.png ipad-5-result-2.png; do
+          for f in ${SHOTS_LIST:-iphone-5-result-2.png iphone-6-editor.png iphone-7-pro.png ipad-6-editor.png iphone-4-levelled.png}; do
             [[ -f "$f" ]] || continue
             sips -s format jpeg -s formatOptions 40 -Z 400 "$f" --out "../ann/${f%.png}.jpg" >/dev/null || continue
             base64 -i "../ann/${f%.png}.jpg" | tr -d '\n' | fold -w 3900 > "../ann/${f%.png}.b64"

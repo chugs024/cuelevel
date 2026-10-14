@@ -176,7 +176,7 @@ enum MobileEngine {
             }
             sourceLevels = try meter.finish()
         }
-        let plan = LosslessPlan(levels: sourceLevels, target: settings.target, ceiling: settings.peak, maxLimiting: 0)
+        let plan = settings.manualGain.map { LosslessPlan(fixedGain: $0) } ?? LosslessPlan(levels: sourceLevels, target: settings.target, ceiling: settings.peak, maxLimiting: 0)
         guard plan.gain.isFinite, abs(plan.gain) < 60 else { throw cueError("The soundtrack is silent or too quiet to level reliably.") }
 
         let processor = CueProcessor(rate: media.sampleRate, gainDB: plan.gain, settings: settings, duration: info.duration)
@@ -205,14 +205,18 @@ enum MobileEngine {
         if plan.shortfall > 0.05 {
             warnings.append("Kept \(f(plan.shortfall)) dB below the \(f(settings.target)) LUFS target so the loudest peak stays under \(f(settings.peak)) dBTP without limiting. Output: \(f(levels.integrated)) LUFS.")
         }
-        if abs(levels.integrated - (settings.target - plan.shortfall)) > 0.5 { warnings.append("Measured output is \(f(levels.integrated)) LUFS, which differs from the planned \(f(settings.target - plan.shortfall)) LUFS. Review before use.") }
-        if levels.truePeak > settings.peak + 0.2 { warnings.append("Output true peak \(f(levels.truePeak)) dBTP is above the \(f(settings.peak)) dBTP ceiling. Review before use.") }
+        let planned = sourceLevels.integrated + plan.gain
+        if abs(levels.integrated - planned) > 0.5 { warnings.append("Measured output is \(f(levels.integrated)) LUFS, which differs from the planned \(f(planned)) LUFS. Review before use.") }
+        if settings.manualGain != nil {
+            if levels.truePeak > 0 && !media.isFloat { warnings.append("Your fader pushes peaks over full scale (\(f(levels.truePeak)) dBTP), so they're clipped in the 24-bit file. Pull the fader down to keep them clean.") }
+            else if levels.truePeak > settings.peak + 0.2 { warnings.append("Your fader puts the loudest peak at \(f(levels.truePeak)) dBTP, over the \(f(settings.peak)) dBTP ceiling.") }
+        } else if levels.truePeak > settings.peak + 0.2 { warnings.append("Output true peak \(f(levels.truePeak)) dBTP is above the \(f(settings.peak)) dBTP ceiling. Review before use.") }
         if analysis.levels.truePeak >= 0 { warnings.append("Source reaches full scale. Existing distortion may remain.") }
         if media.folded { warnings.append("Folded \(media.sourceName) surround down to stereo, as set in Settings. Folding mixes the channels together, so it isn't lossless.") }
         if let n = info.audioStreams, n > 1 { warnings.append(info.isVideo ? (n == 2 ? "2 audio tracks: the first is levelled, the second is copied untouched." : "\(n) audio tracks: the first is levelled, the other \(n - 1) are copied untouched.") : "Only the first of \(n) audio tracks is kept: WAV holds one track.") }
         if info.isVideo && info.hasOtherStreams { warnings.append("Subtitle tracks were not copied.") }
         return ProcessedAudio(url: output, levels: levels, waveform: wave.peaks, settings: settings, warnings: warnings, created: Date(),
-                              finalGainMode: "fixed", loudnessCurve: reducedCurve(meter.shortTerm), gainApplied: plan.gain, shortfall: plan.shortfall, limiting: 0)
+                              finalGainMode: settings.manualGain != nil ? "manual" : "fixed", loudnessCurve: reducedCurve(meter.shortTerm), gainApplied: plan.gain, shortfall: plan.shortfall, limiting: 0)
     }
 
     // MARK: Audio files → WAV

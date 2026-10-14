@@ -4,8 +4,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var store: CueStore
+    @EnvironmentObject var pro: ProStore
     @Environment(\.dismiss) private var dismiss
     @State private var confirmClear = false
+    @State private var showPro = false
 
     var body: some View {
         NavigationStack {
@@ -44,6 +46,18 @@ struct SettingsView: View {
                     Text("Audio is saved as WAV at its own sample rate; video as MOV with the picture copied untouched. Your originals are never changed.")
                 }
                 Section {
+                    if pro.isPro {
+                        Label("Pro is unlocked", systemImage: "checkmark.seal.fill").foregroundStyle(Theme.good)
+                    } else {
+                        Button("Unlock CueLevel Pro") { showPro = true }
+                        Button("Restore purchase") { Task { await pro.restore() } }
+                        if let m = pro.message { Text(m).font(.system(size: 13)).foregroundStyle(Theme.changed) }
+                    }
+                } header: { Text("CueLevel Pro") } footer: {
+                    Text(pro.isPro ? "Thank you. The editor, fader and section tools are yours on every device signed in to this Apple Account."
+                         : "Quick levelling is free. Pro adds the editor: your own fader, clip gain sections, editing Even out, trims and fades.")
+                }
+                Section {
                     row("Version", (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") + ")")
                     Link("Privacy", destination: URL(string: "https://cuelevel.com/privacy.html")!)
                     Link("Terms", destination: URL(string: "https://cuelevel.com/terms.html")!)
@@ -58,6 +72,7 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .sheet(isPresented: $showPro) { ProView().environmentObject(pro) }
             .confirmationDialog("Remove all levelled copies?", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("Remove levelled copies", role: .destructive) { store.clearLevelled() }
             } message: { Text("Your cues and originals stay. You can level them again at any time.") }
@@ -73,10 +88,12 @@ struct SettingsView: View {
 @main
 struct CueLevelMobileApp: App {
     @StateObject private var store = CueStore()
+    @StateObject private var pro = ProStore()
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(store)
+                .environmentObject(pro)
                 .preferredColorScheme(.dark)
                 .onOpenURL { url in store.add([url]) }
                 .task { await DemoHooks.run(store) }
@@ -95,6 +112,9 @@ struct CueLevelMobileApp: App {
             while store.cues.contains(where: { $0.state == .queued || $0.state == .measuring }) { try? await Task.sleep(nanoseconds: 300_000_000) }
             store.levelAll()
         }
-        if let n = value("-select").flatMap(Int.init), store.cues.indices.contains(n - 1) { store.selection = store.cues[n - 1].id }
+        if let n = value("-select").flatMap(Int.init), store.cues.indices.contains(n - 1) {
+            store.selection = store.cues[n - 1].id
+            if args.contains("-edit") { try? await Task.sleep(nanoseconds: 1_500_000_000); store.openEditorFor = store.cues[n - 1].id }
+        }
     }
 }

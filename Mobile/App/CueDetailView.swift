@@ -4,10 +4,13 @@ import SwiftUI
 
 struct CueDetailView: View {
     @EnvironmentObject var store: CueStore
+    @EnvironmentObject var pro: ProStore
     @StateObject private var player = CuePlayer()
     let id: UUID
     @State private var showPicture = false
     @State private var showMeasurements = false
+    @State private var showEditor = false
+    @State private var showPro = false
 
     var body: some View {
         if let cue = store.cue(id) {
@@ -41,8 +44,15 @@ struct CueDetailView: View {
             .onChange(of: cue.outputName) { load(store.cue(id) ?? cue) }
             .onChange(of: id) { load(store.cue(id) ?? cue) }
             .onDisappear { player.pause() }
+            .onChange(of: store.openEditorFor) { if store.openEditorFor == id { store.openEditorFor = nil; openEditor() } }
+            .fullScreenCover(isPresented: $showEditor) {
+                if let c = store.cue(id), c.analysis != nil { CueEditorView(store: store, cue: c).environmentObject(store) }
+            }
+            .sheet(isPresented: $showPro) { ProView(onUnlocked: { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { showEditor = true } }).environmentObject(pro) }
         }
     }
+    /// Pro opens the editor; otherwise the Pro sheet explains what it adds.
+    func openEditor() { player.pause(); if pro.isPro { showEditor = true } else { showPro = true } }
 
     private func load(_ cue: MobileCue) {
         player.load(original: store.originalURL(cue), levelled: store.outputURL(cue), gain: cue.output?.gainApplied ?? 0,
@@ -149,6 +159,22 @@ struct CueDetailView: View {
                     legend(Theme.changed, "Loudness over time")
                     if band != nil { legend(Theme.good.opacity(0.5), "Good range for \(store.mode(for: cue).label)") }
                 }
+                Button { openEditor() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "slider.vertical.3")
+                        Text(cue.handEdited ? "Edit your changes" : "Edit by hand")
+                        Spacer()
+                        if !pro.isPro {
+                            Text("Pro").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.onGood)
+                                .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(Theme.good))
+                        }
+                        Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.dim)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CLButton(kind: .secondary))
+                .disabled(cue.state == .levelling || cue.state == .measuring)
+                .accessibilityHint("Fader, clip gain sections, trims and fades")
             }
         }
     }
@@ -279,13 +305,16 @@ struct ResultCard: View {
                 }
                 if let out = cue.output, cue.alreadyGood == nil {
                     let regions = cue.autoRegions ?? []
-                    if !regions.isEmpty {
+                    if cue.handEdited {
+                        let n = ClipGain.active(cue.manualRegions).count
+                        done("Your edits", (n == 0 ? "No sections" : "\(n) section\(n == 1 ? "" : "s")") + (cue.fader != nil ? ", level set on the fader" : ", automatic level"), nil)
+                    } else if !regions.isEmpty {
                         done("Evened out \(regions.count) stretch\(regions.count == 1 ? "" : "es")",
                              regions.prefix(3).map { "\(clock($0.start))–\(clock($0.end)) \(dbText($0.gain)) dB" }.joined(separator: ", ") + (regions.count > 3 ? "…" : ""), nil)
                     } else if cue.evenOutSkipped == true {
                         done("Not evened out", "This cue plays continuously like music, so its loud and quiet parts were kept.", nil, on: false)
                     }
-                    done("Gain", out.shortfall.map { $0 > 0.05 ? "Kept \(dbText($0, signed: false)) dB under the target so peaks stay under the ceiling" : "One exact change" } ?? "One exact change",
+                    done("Gain", cue.fader != nil ? "Set on the fader" : out.shortfall.map { $0 > 0.05 ? "Kept \(dbText($0, signed: false)) dB under the target so peaks stay under the ceiling" : "One exact change" } ?? "One exact change",
                          dbText(out.gainApplied ?? 0) + " dB")
                     ForEach(out.warnings.filter { !$0.hasPrefix("Kept ") }, id: \.self) { w in
                         Label { Text(w).font(.system(size: 13.5)).foregroundStyle(Theme.text) } icon: { Image(systemName: "exclamationmark.triangle").foregroundStyle(Theme.changed) }

@@ -374,7 +374,7 @@ enum AudioEngine {
             sourceLevels = try measure(temp, token: token, duration: info.duration, keepChannels: true) { progress(0.15 + $0 * 0.05, "Measuring clip gain edits") }
         } else { sourceLevels = analysis.levels }
         defer { if let clipped { try? FileManager.default.removeItem(at: clipped) } }
-        let plan = LosslessPlan(levels: sourceLevels, target: settings.target, ceiling: settings.peak, maxLimiting: settings.peakLimit ?? 0)
+        let plan = settings.manualGain.map { LosslessPlan(fixedGain: $0) } ?? LosslessPlan(levels: sourceLevels, target: settings.target, ceiling: settings.peak, maxLimiting: settings.peakLimit ?? 0)
         guard plan.gain.isFinite, abs(plan.gain) < 60 else { throw cueError("The soundtrack is silent or too quiet to level reliably.") }
         let output = directory.appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_CueLevel." + ext)
         let sampleFormat = info.audioDescription.hasPrefix("pcm_f") ? "pcm_f32le" : "pcm_s24le"

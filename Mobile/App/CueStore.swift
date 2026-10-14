@@ -32,10 +32,15 @@ struct MobileCue: Codable, Identifiable, Equatable, Sendable {
     /// 2.1: how many channels the measurement used (the source's, or 2 when surround was folded). nil for cues measured
     /// by older versions, which always measured in stereo.
     var measuredChannels: Int? = nil
+    /// Pro (2.1): sections set by hand in the editor (they replace Even out for this cue), and the fader's gain in dB.
+    var manualRegions: [GainRegion]? = nil
+    var fader: Double? = nil
+    var handEdited: Bool { manualRegions != nil || fader != nil }
 
     static func == (a: MobileCue, b: MobileCue) -> Bool {
         a.id == b.id && a.state == b.state && a.message == b.message && a.mode == b.mode && a.outputName == b.outputName
             && a.trim == b.trim && a.evenOut == b.evenOut && a.edit == b.edit && a.analysis?.levels.integrated == b.analysis?.levels.integrated
+            && a.manualRegions == b.manualRegions && a.fader == b.fader
     }
 
     var stage: CueStage {
@@ -87,6 +92,8 @@ final class CueStore: ObservableObject {
     @Published var progressLabel: [UUID: String] = [:]
     @Published var error: String?
     @Published var status = ""
+    /// Set to open a cue's editor from outside its page (the build server's screenshots).
+    @Published var openEditorFor: UUID?
     let library: ReferenceLibrary
     private var worker: Task<Void, Never>?
     private var levelQueue: [UUID] = []
@@ -318,7 +325,7 @@ final class CueStore: ObservableObject {
         progress[id] = nil; progressLabel[id] = nil
     }
 
-    private func evenOutData(_ id: UUID) -> EvenOutData? {
+    func evenOutData(_ id: UUID) -> EvenOutData? {
         guard let data = try? Data(contentsOf: Self.details.appendingPathComponent(id.uuidString + ".json")) else { return nil }
         return try? JSONDecoder().decode(EvenOutData.self, from: data)
     }
@@ -337,10 +344,10 @@ final class CueStore: ObservableObject {
             let head = max(0, stats.headSilence - 0.1), tail = max(0, stats.tailSilence - 0.1)
             if head >= 0.3 || tail >= 0.3 { edit = CueEdit.trimmedToSound(stats, duration: duration, keeping: edit) }
         }
-        // Even out, never for music.
-        var regions: [GainRegion] = []
+        // Even out, never for music. Sections set by hand in the editor (Pro) take its place.
+        var regions: [GainRegion] = c.manualRegions ?? []
         var skipped = false
-        if (c.evenOut ?? settings.evenOut) && mode != .music {
+        if c.manualRegions == nil, (c.evenOut ?? settings.evenOut) && mode != .music {
             var data = evenOutData(id)
             if data == nil { let source = originalURL(c), fold = settings.foldsSurround; data = try? await Task.detached { try await MobileEngine.analyze(source, foldSurround: fold).1 }.value }
             if let data {
@@ -350,8 +357,9 @@ final class CueStore: ObservableObject {
         }
         s.clipGain = regions.isEmpty ? nil : regions
         s.edit = edit
+        s.manualGain = c.fader
         let good = cueAlreadyGoodReason(analysis: analysis, target: s.target, peak: s.peak, autoSections: regions.count,
-                                        hasEdits: edit.changesAudio(duration: duration), library: library, mode: mode)
+                                        hasEdits: edit.changesAudio(duration: duration) || c.handEdited, library: library, mode: mode)
         let input = originalURL(c)
         let directory = Self.levelled
         if let old = outputURL(c) { try? FileManager.default.removeItem(at: old) }
@@ -374,7 +382,7 @@ final class CueStore: ObservableObject {
             let notes = result.warnings.filter { !$0.hasPrefix("Kept ") }
             update(id) {
                 $0.output = result; $0.outputName = result.url.lastPathComponent
-                $0.autoRegions = regions; $0.evenOutSkipped = skipped ? true : nil
+                $0.autoRegions = $0.manualRegions == nil ? regions : nil; $0.evenOutSkipped = skipped ? true : nil
                 $0.state = good != nil ? .alreadyGood : (notes.isEmpty ? .levelled : .needsLook)
             }
         } catch is CancellationError {
@@ -383,6 +391,49 @@ final class CueStore: ObservableObject {
             update(id) { $0.state = .failed; $0.message = error.localizedDescription }
         }
         progress[id] = nil; progressLabel[id] = nil
+    }
+
+    // MARK: Pro editor
+    /// What CueLevel would do on its own (the show's trim and Even out settings), as a starting point for the editor.
+    func automaticDraft(_ c: MobileCue) -> EditDraft {
+        guard let analysis = c.analysis else { return EditDraft(regions: [], edit: c.edit, gain: nil) }
+        let duration = analysis.info.duration, mode = mode(for: c)
+        var edit = c.edit
+        edit.inPoint = 0; edit.outPoint = nil; edit.fadeIn = 0; edit.fadeOut = 0
+        if settings.trimSilence, let stats = analysis.stereo {
+            let head = max(0, stats.headSilence - 0.1), tail = max(0, stats.tailSilence - 0.1)
+            if head >= 0.3 || tail >= 0.3 { edit = CueEdit.trimmedToSound(stats, duration: duration, keeping: edit) }
+        }
+        var regions: [GainRegion] = []
+        if settings.evenOut, mode != .music, let data = evenOutData(c.id) {
+            regions = MobileEngine.evenOutPlan(data, duration: duration, tolerance: library.evenOutTolerance(for: mode), keeping: [], skipMusic: c.mode == nil).regions
+        }
+        return EditDraft(regions: regions, edit: edit, gain: nil)
+    }
+    /// The editor opens on the cue as it was last edited, or as CueLevel would level it.
+    func currentDraft(_ c: MobileCue) -> EditDraft {
+        if c.handEdited { return EditDraft(regions: c.manualRegions ?? c.autoRegions ?? [], edit: c.edit, gain: c.fader) }
+        var draft = automaticDraft(c)
+        if c.trim == false { draft.edit = c.edit }
+        if c.evenOut == false { draft.regions = [] } else if let made = c.autoRegions, c.output != nil { draft.regions = made }
+        return draft
+    }
+    /// Saves the editor's work on the cue and levels it with exactly those edits.
+    func saveEdits(_ id: UUID, _ draft: EditDraft) {
+        update(id) { c in
+            c.manualRegions = draft.regions.map { var r = $0; r.isAuto = nil; return r }
+            c.edit = draft.edit
+            c.fader = draft.gain
+            c.trim = false; c.evenOut = false   // the editor's trims and sections are the plan now
+        }
+        level([id])
+    }
+    /// Forgets the hand edits; the cue goes back to the show's automatic plan.
+    func clearEdits(_ id: UUID) {
+        update(id) { c in
+            c.manualRegions = nil; c.fader = nil; c.trim = nil; c.evenOut = nil
+            c.edit.inPoint = 0; c.edit.outPoint = nil; c.edit.fadeIn = 0; c.edit.fadeOut = 0
+        }
     }
 
     func clearLevelled() {
