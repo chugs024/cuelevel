@@ -51,12 +51,12 @@ struct AssistantPanel: View {
 
     @ViewBuilder func plan(_ job: CueJob, _ analysis: Analysis) -> some View {
         let lossless = model.settings.format == .lossless
-        let plan = CuePlan.make(analysis: analysis, settings: model.settings, evenOut: model.evenOut, autoTrim: model.autoTrim,
+        let plan = CuePlan.make(analysis: analysis, settings: model.cueSettings(job), evenOut: model.evenOut, autoTrim: model.autoTrim,
                                 edit: job.edit ?? CueEdit(), handEdits: Workspace.hasHandEdits(job, duration: analysis.info.duration), library: model.references)
         VStack(alignment: .leading, spacing: 4) {
             Text(job.output != nil ? "Level again" : "What CueLevel will do").sectionTitle()
             Text(model.references.isEmpty ? "Untick anything you don't want. Nothing changes until you level the cue."
-                 : "Checked against your good \(model.settings.mode.label) cues. Untick anything you don't want.").hint()
+                 : "Checked against your good \(model.mode(for: job).label) cues. Untick anything you don't want.").hint()
         }
         if let reason = plan.looksGood, lossless {
             HStack(alignment: .top, spacing: 10) {
@@ -107,6 +107,12 @@ struct AssistantPanel: View {
         return Group {
             if let control = step.control {
                 Toggle(isOn: Binding(get: { step.isOn }, set: { set(control, $0) })) { label }.toggleStyle(CLCheck())
+            } else if !step.isOn {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "minus").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.dim)
+                        .frame(width: 18, height: 18).background(RoundedRectangle(cornerRadius: 5).stroke(Theme.line2)).padding(.top, 1)
+                    label
+                }
             } else {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "arrow.up.and.down").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.onGood)

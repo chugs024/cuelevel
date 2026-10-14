@@ -29,6 +29,8 @@ struct CueJob: Identifiable, Codable {
     var transcript: [TranscriptWord]? = nil
     /// Set when Quick Level found nothing to change (1.8): why the cue is already good.
     var alreadyGood: String? = nil
+    /// This cue's content type when it differs from the show's (2.0.1), e.g. a music bed in a voice show.
+    var mode: ContentMode? = nil
 }
 struct SavedPreset: Codable, Identifiable { var id = UUID(); var name: String; var settings: ProcessingSettings }
 struct Session: Codable {
@@ -123,6 +125,21 @@ struct ExportReport: Codable {
     private var playerError: NSKeyValueObservation?
     let directory: URL
     var selected: CueJob? { jobs.first { $0.id == selection } }
+    /// A cue's content type: its own choice, else the show's.
+    func mode(for job: CueJob?) -> ContentMode { job?.mode ?? settings.mode }
+    /// The show settings as they apply to one cue (its own content type).
+    func cueSettings(_ job: CueJob?) -> ProcessingSettings { Self.applying(job?.mode, to: settings) }
+    static func applying(_ mode: ContentMode?, to base: ProcessingSettings) -> ProcessingSettings {
+        guard let mode, mode != base.mode else { return base }
+        var s = base
+        if s.format == .lossless { s.mode = mode } else { s.setMode(mode) }
+        return s
+    }
+    /// Sets the selected cue's content type (nil = follow the show).
+    func setCueMode(_ mode: ContentMode?) {
+        guard let id = selection else { return }
+        update(id) { $0.mode = mode == settings.mode ? nil : mode }; persist()
+    }
     var completedCount: Int { jobs.filter { $0.output != nil }.count }
     var remainingCount: Int { jobs.filter { $0.output == nil }.count }
     var currentWaveform: [Float] { processedPreview ? (selected?.output?.waveform ?? []) : (selected?.analysis?.waveform ?? []) }
@@ -141,7 +158,7 @@ struct ExportReport: Codable {
         used.clipGain = nil; used.edit = nil
         // Per-cue recommendations and Quick Level legitimately change some settings per cue; compare what the user controls.
         if autoRecommend || used.format == .lossless {
-            return used.target != settings.target || used.peak != settings.peak || used.mode != settings.mode || (used.format == .lossless) != (settings.format == .lossless || quickLevel) || (used.format == .lossless && used.peakLimit != settings.peakLimit)
+            return used.target != settings.target || used.peak != settings.peak || used.mode != mode(for: job) || (used.format == .lossless) != (settings.format == .lossless || quickLevel) || (used.format == .lossless && used.peakLimit != settings.peakLimit)
         }
         return used != settings
     }
@@ -254,6 +271,7 @@ struct ExportReport: Codable {
             for id in ids {
                 do { try cancellation.check() } catch { break }
                 guard let current = jobs.first(where: { $0.id == id }) else { continue }
+                let perCue = Self.applying(current.mode, to: options)   // 2.0.1: the cue's own content type
                 workingID = id
                 update(id) { $0.status = .working; $0.progress = 0; $0.message = "Starting" }; persist()
                 do {
@@ -271,17 +289,18 @@ struct ExportReport: Codable {
                     }
                     update(id) { $0.analysis = analysis }
                     var evened = 0
-                    if render && quick && evenOut {
+                    // Even out is for speech; a song's loud and quiet parts are part of the music.
+                    if render && quick && evenOut && perCue.mode != .music {
                         update(id) { $0.message = "Evening out loud and quiet stretches" }
                         let all = jobs.first(where: { $0.id == id })?.clipGain ?? []
                         let manual = all.filter { $0.isAuto != true }, keep = all.filter { $0.isAuto != true || $0.isGap == true }
                         let source = current.source, info = analysis.info
-                        let tolerance = references.evenOutTolerance(for: options.mode)
+                        let tolerance = references.evenOutTolerance(for: perCue.mode)
                         let auto = try await offPool { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: cancellation) }
                         update(id) { $0.clipGain = keep + auto }
                         evened = auto.count
                     }
-                    var cueOptions = Self.settingsForCue(options, analysis: analysis, library: references, recommend: autoRecommend && !quick)
+                    var cueOptions = Self.settingsForCue(perCue, analysis: analysis, library: references, recommend: autoRecommend && !quick)
                     if render && quick && autoTrim, let stats = analysis.stereo {
                         let duration = analysis.info.duration
                         update(id) { $0.edit = CueEdit.trimmedToSound(stats, duration: duration, keeping: $0.edit ?? CueEdit()) }
@@ -398,7 +417,7 @@ struct ExportReport: Codable {
     /// Compares the cue with the approved references for the currently selected content type.
     func referenceCheck(for job: CueJob, settings options: ProcessingSettings? = nil) -> ReferenceCheck? {
         guard let analysis = job.analysis, !references.isEmpty else { return nil }
-        let basis = options ?? settings
+        let basis = options ?? cueSettings(job)
         return ReferenceCheck(cue: analysis.levels, mode: basis.mode, library: references, settings: basis)
     }
     /// Applies the recommendation to the processing settings. Nothing is processed until the user chooses Process.
@@ -460,7 +479,7 @@ struct ExportReport: Codable {
         Task {
             defer { measuringSection = false }
             do {
-                let tolerance = references.evenOutTolerance(for: settings.mode)
+                let tolerance = references.evenOutTolerance(for: mode(for: job))
                 let auto = try await offPool { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: Cancellation()) }
                 setRegions(keep + auto)
                 status = auto.isEmpty ? "Already even: nothing is more than \(Int(ClipGain.evenOutTolerance)) dB from the typical level" : "Even out made \(auto.count) section\(auto.count == 1 ? "" : "s"). Adjust any of them, then click Done editing."
@@ -623,7 +642,7 @@ struct ExportReport: Codable {
     // MARK: Reference shapes — what good sounds like over time (1.7)
     /// The band where good references of this content type sit, relative to the target (short-term LUFS).
     func goodBand(target: Double) -> ClosedRange<Double>? {
-        guard let shape = references.span(for: settings.mode)?.shape else { return nil }
+        guard let shape = references.span(for: mode(for: selected))?.shape else { return nil }
         return (target + shape.lowerBound) ... (target + shape.upperBound)
     }
     /// This cue's short-term spread (P90 − P10) from its loudness curve.
@@ -823,7 +842,7 @@ struct ExportReport: Codable {
     /// Opens the "Add as reference" sheet for the selected, measured cue.
     func beginAddingReference() {
         guard !busy, let job = selected, job.analysis != nil else { return }
-        referenceDraftCategory = settings.mode; referenceDraftNote = ""; referenceDraft = job.id
+        referenceDraftCategory = mode(for: selected); referenceDraftNote = ""; referenceDraft = job.id
     }
     /// Records the cue's source measurements in the installed library. The recording is hashed, never copied.
     func addReference() {

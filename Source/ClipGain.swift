@@ -178,7 +178,15 @@ extension ClipGain {
         close()
         // One section per run: the gain that brings the run's loudness to the reference, with fades in the surrounding quiet.
         var result: [GainRegion] = []
+        let firstActive = active.firstIndex(of: true) ?? 0, lastActive = active.lastIndex(of: true) ?? m.count - 1
         for r in runs {
+            // 2.0.1: never lift a fade-in at the start or a fade-out at the end.
+            if r.sign < 0, r.activeFrames.count >= 6 {
+                let third = max(1, r.activeFrames.count / 3)
+                let head = median(r.activeFrames.prefix(third).map { m[$0] }) ?? 0, tail = median(r.activeFrames.suffix(third).map { m[$0] }) ?? 0
+                if lastActive - r.last <= 15, head - tail >= 4 { continue }
+                if r.first - firstActive <= 15, tail - head >= 4 { continue }
+            }
             // Trim to readings that themselves sit beyond the tolerance (the smoothing spreads a stretch's edges).
             let core = r.activeFrames.filter { Double(r.sign) * (m[$0] - reference) > tolerance }
             guard let first = core.first, let last = core.last, let loudness = median(core.map { m[$0] }) else { continue }

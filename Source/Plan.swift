@@ -112,10 +112,16 @@ struct CuePlan: Equatable {
                 ? "This cue moves \(f(spread)) LU, like your good \(settings.mode.label) cues (\(f(good.lowerBound))–\(f(good.upperBound))), so there's probably nothing to change."
                 : "This cue moves \(f(spread)) LU; good \(settings.mode.label) moves \(f(good.lowerBound))–\(f(good.upperBound)). " + rule
         }()
-        let likelyUneven = spread.map { s in span?.spread.map { s > $0.upperBound + 1 } ?? false } ?? false
-        steps.append(PlanStep(id: "even", title: "Even out loud and quiet stretches", detail: evenDetail,
-                              value: evenOut && likelyUneven ? "likely" : nil, tone: evenOut && likelyUneven ? .changed : .neutral,
-                              isOn: evenOut, control: .evenOut))
+        let isMusic = settings.mode == .music
+        let likelyUneven = !isMusic && (spread.map { s in span?.spread.map { s > $0.upperBound + 1 } ?? false } ?? false)
+        if isMusic {
+            steps.append(PlanStep(id: "even", title: "Even out loud and quiet stretches",
+                                  detail: "Off for music: a song's loud and quiet parts are part of the music.", value: nil, tone: .neutral, isOn: false, control: nil))
+        } else {
+            steps.append(PlanStep(id: "even", title: "Even out loud and quiet stretches", detail: evenDetail,
+                                  value: evenOut && likelyUneven ? "likely" : nil, tone: evenOut && likelyUneven ? .changed : .neutral,
+                                  isOn: evenOut, control: .evenOut))
+        }
 
         // The gain change.
         let plan = LosslessPlan(levels: levels, target: settings.target, ceiling: settings.peak, maxLimiting: settings.peakLimit ?? 0)

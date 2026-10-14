@@ -266,8 +266,17 @@ struct ContentView: View {
         HStack(alignment: .lastTextBaseline, spacing: 14) {
             Text(job.source.deletingPathExtension().lastPathComponent).font(.system(size: 24, weight: .semibold)).tracking(-0.4).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             if let info = job.analysis?.info {
-                Text(model.settings.mode.label).font(.system(size: 11.5, weight: .medium)).padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Theme.raised))
+                Menu {
+                    ForEach(ContentMode.allCases) { mode in
+                        Button((mode == model.mode(for: job) ? "✓ " : "") + mode.label + (mode == model.settings.mode ? " (show setting)" : "")) { model.setCueMode(mode) }
+                    }
+                } label: {
+                    HStack(spacing: 4) { Text(model.mode(for: job).label); Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)) }
+                        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.bone)
+                }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().tint(Theme.bone)
+                .padding(.horizontal, 7).padding(.vertical, 2).background(RoundedRectangle(cornerRadius: 5).fill(job.mode == nil ? Theme.raised : Theme.changed.opacity(0.18)))
+                .disabled(model.busy)
+                .help("What kind of cue this is. Change it for a music bed in a voice show: music is never evened out.")
                 HStack(spacing: 12) { ForEach(fileFacts(job.source, info), id: \.self) { Text($0) } }.font(.system(size: 12.5)).foregroundStyle(Theme.muted).lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -295,8 +304,8 @@ struct ContentView: View {
                         HStack(spacing: 6) { Capsule().fill(Theme.changed).frame(width: 14, height: 2); Text("Loudness over time") }
                         if model.goodBand(target: target) != nil {
                             HStack(spacing: 6) { RoundedRectangle(cornerRadius: 2).fill(Theme.good.opacity(0.25)).overlay(RoundedRectangle(cornerRadius: 2).stroke(Theme.good.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))).frame(width: 14, height: 8)
-                                Text("Good range for \(model.settings.mode.label)") }
-                                .help("Where your good \(model.settings.mode.label) cues sit over time. Loudness inside the band sounds like good material.")
+                                Text("Good range for \(model.mode(for: job).label)") }
+                                .help("Where your good \(model.mode(for: job).label) cues sit over time. Loudness inside the band sounds like good material.")
                         }
                     }.font(.system(size: 12)).foregroundStyle(Theme.muted)
                 }
