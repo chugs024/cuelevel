@@ -23,7 +23,9 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 echo "== Notarise app"
 ZIP="$OUT/notarise.zip"; ditto -c -k --keepParent "$APP" "$ZIP"
 xcrun notarytool submit "$ZIP" "${NOTARY[@]}" --wait --timeout 45m
-xcrun stapler staple "$APP"; rm -f "$ZIP"
+# Stapling fetches the ticket from Apple; retry a dropped connection rather than failing the release.
+staple() { for attempt in 1 2 3 4 5; do xcrun stapler staple "$1" && return 0; [[ $attempt == 5 ]] && return 1; sleep $((attempt * 15)); done; }
+staple "$APP"; rm -f "$ZIP"
 
 echo "== DMG"
 STAGE="$OUT/dmg"; rm -rf "$STAGE"; mkdir -p "$STAGE"
@@ -35,7 +37,7 @@ codesign --force --timestamp --sign "$IDENTITY" "$DMG"
 
 echo "== Notarise DMG"
 xcrun notarytool submit "$DMG" "${NOTARY[@]}" --wait --timeout 45m
-xcrun stapler staple "$DMG"
+staple "$DMG"
 
 echo "== Verify"
 spctl -a -t open --context context:primary-signature -vv "$DMG"
