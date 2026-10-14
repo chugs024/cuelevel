@@ -133,6 +133,21 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         }
         check(ourRegions.contains { $0.gain > 6 && $0.start > 11 && $0.end < 22 }, "the quiet stretch is lifted")
 
+        print("== Speed: a long, high-bitrate video")
+        // 8 minutes of 1080p at a high bitrate with a stereo soundtrack: FFmpeg's analysis reads the file three times,
+        // the built-in engine reads only the audio, once.
+        try ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=30:d=480", "-f", "lavfi", "-i", "anoisesrc=color=pink:sample_rate=48000:duration=480:seed=9",
+                    "-af", "volume=-12dB", "-c:v", "mpeg4", "-q:v", "1", "-c:a", "aac", "-b:a", "256k", "-shortest", file("long.mov").path])
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: file("long.mov").path)[.size] as? NSNumber)?.int64Value ?? 0
+        var start = Date()
+        let ffLong = try AudioEngine.analyze(file("long.mov"), token: token) { _, _ in }
+        let ffTime = Date().timeIntervalSince(start)
+        start = Date()
+        let (ourLong, _) = try await MobileEngine.analyze(file("long.mov"))
+        let ourTime = Date().timeIntervalSince(start)
+        note("8-min video (\(bytes / 1_000_000) MB): FFmpeg analysis \(String(format: "%.1f", ffTime)) s, built-in \(String(format: "%.1f", ourTime)) s; \(f(ourLong.levels.integrated)) vs \(f(ffLong.levels.integrated)) LUFS")
+        check(ourTime < ffTime, "the built-in engine measures a long video faster than FFmpeg's three passes")
+
         print("== Lossless levelling on the device")
         var settings = ProcessingSettings(); settings.target = -18; settings.peak = -1; settings.format = .lossless
         let out = area.appendingPathComponent("Levelled")
