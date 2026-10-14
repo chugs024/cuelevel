@@ -60,15 +60,46 @@ struct ChannelMap: Sendable, Equatable {
         }
     }
 
-    /// Reads the layout of a format description; falls back to the standard order when it has none or it doesn't fit.
+    /// Reads the layout of a format description; falls back to the codec's own order (AAC keeps centre first) or the
+    /// standard WAV order when it has none or it doesn't fit.
     static func of(_ format: CMAudioFormatDescription, channels n: Int) -> ChannelMap {
         if n == 1 { return .mono }
-        var size = 0
-        if let layout = CMAudioFormatDescriptionGetChannelLayout(format, sizeOut: &size), size >= MemoryLayout<AudioChannelLayout>.size,
-           let labels = labels(of: layout), labels.count == n, labels.contains(where: { $0 >= 1 && $0 <= 18 }) {
-            return ChannelMap(labels: labels)
-        }
+        if let labelled = labelled(format, channels: n) { return labelled }
+        if let tag = codecDefault(format, channels: n), let labels = labels(tag: tag), labels.count == n { return ChannelMap(labels: labels) }
         return standard(n)
+    }
+    /// The labels the format description itself gives, when they name real speaker positions.
+    static func labelled(_ format: CMAudioFormatDescription, channels n: Int) -> ChannelMap? {
+        var size = 0
+        guard let layout = CMAudioFormatDescriptionGetChannelLayout(format, sizeOut: &size), size >= MemoryLayout<AudioChannelLayout>.size,
+              let labels = labels(of: layout), labels.count == n, labels.contains(where: { $0 >= 1 && $0 <= 18 }) else { return nil }
+        return ChannelMap(labels: labels)
+    }
+    /// Compressed formats store surround in their own fixed order when the file has no layout of its own. AAC's is
+    /// centre first (C L R Ls Rs LFE for 5.1).
+    static func codecDefault(_ format: CMAudioFormatDescription, channels n: Int) -> AudioChannelLayoutTag? {
+        guard n > 2, let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee else { return nil }
+        switch asbd.mFormatID {
+        case kAudioFormatMPEG4AAC, kAudioFormatMPEG4AAC_HE, kAudioFormatMPEG4AAC_HE_V2, kAudioFormatMPEG4AAC_LD, kAudioFormatMPEG4AAC_ELD:
+            switch n {
+            case 3: return kAudioChannelLayoutTag_AAC_3_0
+            case 4: return kAudioChannelLayoutTag_AAC_4_0
+            case 5: return kAudioChannelLayoutTag_AAC_5_0
+            case 6: return kAudioChannelLayoutTag_AAC_5_1
+            case 7: return kAudioChannelLayoutTag_AAC_6_1
+            case 8: return kAudioChannelLayoutTag_AAC_7_1
+            default: return nil
+            }
+        default: return nil
+        }
+    }
+    static func labels(tag: AudioChannelLayoutTag) -> [AudioChannelLabel]? {
+        var layout = AudioChannelLayout(); layout.mChannelLayoutTag = tag
+        return labels(of: &layout)
+    }
+    static func tagData(_ tag: AudioChannelLayoutTag) -> Data {
+        var layout = AudioChannelLayout(); layout.mChannelLayoutTag = tag
+        return Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
     }
 
     /// The raw layout of a format description, to pass on to the decoder and writer unchanged.

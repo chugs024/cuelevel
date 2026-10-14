@@ -69,9 +69,17 @@ enum MediaReader {
         let fold = foldSurround && channels > 2
         let map = fold ? ChannelMap.stereo : ChannelMap.of(format, channels: channels)
         return OpenedMedia(asset: asset, audioTrack: track, info: info, sourceChannels: channels, sampleRate: asbd.mSampleRate, isFloat: isFloat,
-                           map: map, sourceLayout: ChannelMap.layoutData(format), folded: fold, sourceName: layout)
+                           map: map, sourceLayout: sourceLayout(format, channels: channels), folded: fold, sourceName: layout)
     }
 
+    /// The layout to decode with: the file's own, or the codec's standard one when the file names none (so the
+    /// decoder's channel order is the one CueLevel assumes).
+    static func sourceLayout(_ format: CMAudioFormatDescription, channels n: Int) -> Data? {
+        guard n > 2 else { return ChannelMap.layoutData(format) }
+        if ChannelMap.labelled(format, channels: n) != nil { return ChannelMap.layoutData(format) }
+        if let tag = ChannelMap.codecDefault(format, channels: n) { return ChannelMap.tagData(tag) }
+        return nil
+    }
     static func codecName(_ d: AudioStreamBasicDescription) -> String {
         switch d.mFormatID {
         case kAudioFormatLinearPCM:

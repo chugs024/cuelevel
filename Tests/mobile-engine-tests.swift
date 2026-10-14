@@ -103,7 +103,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         _ = try await compare("AAC (M4A)", file("speech.m4a"), integrated: 0.2)
         _ = try await compare("FLAC", file("speech.flac"))
         _ = try await compare("video's first audio track", file("show.mov"), integrated: 0.2)
-        check(speech.stereo?.correlation.map { $0 > 0.999 } == true, "mono reads as identical channels")
+        check(speech.channelsMeasured == 1 && speech.stereo?.correlation == nil, "mono is measured as mono (no stereo phase reading)")
         check(speech.info.channels == 1 && speech.info.sampleRate == 44100 && !speech.info.isVideo, "speech file info")
 
         // A sting: decaying tones every 2 s, 44.1 kHz 16-bit (the simulator run read 0.4 LU apart after Even out).
