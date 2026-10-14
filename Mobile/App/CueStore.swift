@@ -117,9 +117,9 @@ final class CueStore: ObservableObject {
         if cues.contains(where: { $0.state == .queued }) { startWorker() }
     }
     func save() {
-        let snapshot = Session(cues: cues, settings: settings)
+        let snapshot = Session(cues: cues, settings: settings), url = Self.sessionURL
         Task.detached(priority: .utility) {
-            if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: CueStore.sessionURL, options: .atomic) }
+            if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: url, options: .atomic) }
         }
     }
 
