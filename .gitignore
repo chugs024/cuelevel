@@ -1,6 +1,6 @@
 # Build products and engines (never commit binaries)
-Engine/
-build/
+/Engine/
+/build/
 *.dmg
 *.app/
 *.zip
