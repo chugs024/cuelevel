@@ -114,8 +114,8 @@ struct ContentView: View {
             if model.busy && model.canCancel {
                 Button { model.cancel() } label: { Label("Stop", systemImage: "stop.fill") }.buttonStyle(CLButton(kind: .danger)).keyboardShortcut(".")
             } else {
-                let todo = model.jobs.filter { !CueStage($0).isDone || $0.output == nil }.count
-                Button(model.jobs.isEmpty ? "Level all" : todo == 0 ? "All levelled" : "Level all \(todo)") { model.quickLevelAll() }.buttonStyle(CLButton())
+                let todo = model.levelAllIDs.count
+                Button(model.jobs.isEmpty || todo == 0 ? "Level all" : "Level all \(todo)") { model.quickLevelAll() }.buttonStyle(CLButton())
                     .disabled(model.busy || todo == 0)
             }
             Menu {

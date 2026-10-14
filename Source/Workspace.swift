@@ -31,6 +31,8 @@ struct CueJob: Identifiable, Codable {
     var alreadyGood: String? = nil
     /// This cue's content type when it differs from the show's (2.0.1), e.g. a music bed in a voice show.
     var mode: ContentMode? = nil
+    /// Quick Level left Even out off because the cue plays continuously, like music (2.0.1).
+    var evenOutSkipped: Bool? = nil
 }
 struct SavedPreset: Codable, Identifiable { var id = UUID(); var name: String; var settings: ProcessingSettings }
 struct Session: Codable {
@@ -138,7 +140,7 @@ struct ExportReport: Codable {
     /// Sets the selected cue's content type (nil = follow the show).
     func setCueMode(_ mode: ContentMode?) {
         guard let id = selection else { return }
-        update(id) { $0.mode = mode == settings.mode ? nil : mode }; persist()
+        update(id) { $0.mode = mode }; persist()
     }
     var completedCount: Int { jobs.filter { $0.output != nil }.count }
     var remainingCount: Int { jobs.filter { $0.output == nil }.count }
@@ -259,7 +261,9 @@ struct ExportReport: Codable {
     /// Saved into the Quick Level folder when one is chosen; otherwise use Export.
     func quickLevelSelected() { guard let id = selection else { return }; run(ids: [id], render: true, quickOverride: true) }
     /// Levels every cue that isn't done yet (2.0: "Level all" skips cues already levelled or already good).
-    func quickLevelAll() { run(ids: jobs.filter { !CueStage($0).isDone || $0.output == nil }.map(\.id), render: true, quickOverride: true) }
+    func quickLevelAll() { run(ids: levelAllIDs, render: true, quickOverride: true) }
+    /// Cues "Level all" will level: not levelled yet and readable (2.0.1: files that can't be read aren't retried every time).
+    var levelAllIDs: [UUID] { jobs.filter { $0.output == nil && $0.status != .failed }.map(\.id) }
     private func run(ids: [UUID], render: Bool, quickOverride: Bool = false) {
         guard !busy, !ids.isEmpty else { return }
         busy = true; player.pause(); playing = false
@@ -273,7 +277,7 @@ struct ExportReport: Codable {
                 guard let current = jobs.first(where: { $0.id == id }) else { continue }
                 let perCue = Self.applying(current.mode, to: options)   // 2.0.1: the cue's own content type
                 workingID = id
-                update(id) { $0.status = .working; $0.progress = 0; $0.message = "Starting" }; persist()
+                update(id) { $0.status = .working; $0.progress = 0; $0.message = "Starting"; $0.evenOutSkipped = nil }; persist()
                 do {
                     let analysis: Analysis
                     let attributes = try? FileManager.default.attributesOfItem(atPath: current.source.path)
@@ -296,8 +300,10 @@ struct ExportReport: Codable {
                         let manual = all.filter { $0.isAuto != true }, keep = all.filter { $0.isAuto != true || $0.isGap == true }
                         let source = current.source, info = analysis.info
                         let tolerance = references.evenOutTolerance(for: perCue.mode)
-                        let auto = try await offPool { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: cancellation) }
-                        update(id) { $0.clipGain = keep + auto }
+                        let skipMusic = current.mode == nil   // a cue the user marked Voice is always evened
+                        let plan = try await offPool { try AudioEngine.evenOutPlan(source, info: info, tolerance: tolerance, keeping: manual, skipMusic: skipMusic, token: cancellation) }
+                        let auto = plan.regions
+                        update(id) { $0.clipGain = keep + auto; $0.evenOutSkipped = plan.soundsLikeMusic ? true : nil }
                         evened = auto.count
                     }
                     var cueOptions = Self.settingsForCue(perCue, analysis: analysis, library: references, recommend: autoRecommend && !quick)

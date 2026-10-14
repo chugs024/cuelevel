@@ -425,6 +425,7 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         var deepStretch = steadyCurve; for i in 60..<160 { deepStretch[i] = -37 }   // 10 s, 17 dB down: a quiet passage, not a pause
         let deepLifted = ClipGain.evenOut(momentary: deepStretch, duration: 20)
         check(deepLifted.count == 1 && near(deepLifted[0].gain, ClipGain.evenOutMaxBoost, 0.01), "long quiet passage lifted (capped): \(deepLifted)")
+        check(ClipGain.soundsLikeMusic(momentary: steadyCurve) && !ClipGain.soundsLikeMusic(momentary: withPauses), "continuous vs speech-like")
         var fadeOut = steadyCurve; for i in 150..<200 { fadeOut[i] = -20 - Double(i - 150) * 0.5 }   // 5 s fade to -45
         check(ClipGain.evenOut(momentary: fadeOut, duration: 20).allSatisfy { $0.gain < 0 }, "a fade-out is never lifted: \(ClipGain.evenOut(momentary: fadeOut, duration: 20))")
         var musicSettings = lossless; musicSettings.mode = .music

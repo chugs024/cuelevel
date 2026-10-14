@@ -132,6 +132,18 @@ extension ClipGain {
     /// Finds stretches whose loudness sits clearly above or below the cue's typical level and returns sections that bring
     /// them back. `momentary` holds 400 ms loudness readings every 100 ms. Pauses are ignored when judging a stretch, and
     /// fades sit in the quiet around it. Sections never overlap `avoiding` (sections drawn by hand).
+    /// Speech pauses often: in a speech cue a good share of 100 ms readings sit well below the typical level.
+    /// Music (and most narration over a bed) plays continuously. Needs at least 20 s to judge.
+    static func soundsLikeMusic(momentary m: [Double]) -> Bool {
+        let audible = m.filter { $0 > -70 }
+        guard audible.count >= 200 else { return false }
+        let sorted = audible.sorted(), typical = sorted[sorted.count / 2]
+        // Ignore silence before the first and after the last sound.
+        guard let first = m.firstIndex(where: { $0 > typical - 20 }), let last = m.lastIndex(where: { $0 > typical - 20 }), last > first else { return false }
+        let span = m[first...last]
+        let dips = span.filter { $0 < typical - 12 }.count
+        return Double(dips) / Double(span.count) < 0.04
+    }
     static func evenOut(momentary m: [Double], duration: Double, tolerance: Double = evenOutTolerance, avoiding: [GainRegion] = [], peaks: [Float]? = nil) -> [GainRegion] {
         let step = 0.1
         guard m.count > 20 else { return [] }
@@ -200,6 +212,16 @@ extension ClipGain {
             if let peaks {
                 start = quietest(near: start, from: start - 0.6, to: start + 0.1, peaks: peaks, duration: duration)
                 end = quietest(near: end, from: end - 0.1, to: end + 0.6, peaks: peaks, duration: duration)
+            }
+            // 2.0.1: a lifted stretch never peaks above the cue's existing loudest peak, so Even out can't create new overs.
+            if gain > 0, let peaks, !peaks.isEmpty, duration > 0, let loudest = peaks.max(), loudest > 0 {
+                let perSecond = Double(peaks.count) / duration
+                let lo = max(0, min(peaks.count - 1, Int(start * perSecond))), hi = max(lo, min(peaks.count - 1, Int(end * perSecond)))
+                if let sectionPeak = peaks[lo...hi].max(), sectionPeak > 0 {
+                    let room = 20 * log10(Double(loudest) / Double(sectionPeak))
+                    gain = min(gain, (room * 2).rounded(.down) / 2)
+                }
+                guard gain >= tolerance * 0.75 else { continue }
             }
             var region = GainRegion(start: start, end: end, gain: gain, fadeIn: CueEdit.clickGuard, fadeOut: CueEdit.clickGuard)
             region.isAuto = true

@@ -165,6 +165,15 @@ struct AssistantPanel: View {
                 if !evened.isEmpty {
                     done("Evened out \(evened.count) stretch\(evened.count == 1 ? "" : "es")", evened.prefix(3).map { "\(clockText($0.start))–\(clockText($0.end)) \(signed($0.gain)) dB" }.joined(separator: ", "), nil)
                 }
+                if job.evenOutSkipped == true {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "minus").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.dim).frame(width: 18, height: 18).padding(.top, 1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Not evened out").font(.system(size: 13, weight: .medium))
+                            Text("This cue plays continuously, like music, so its loud and quiet parts were kept. If it's speech, set its type to Voice and level it again.").hint()
+                        }
+                    }.padding(.horizontal, 8).padding(.vertical, 7)
+                }
                 if let gain = output.gainApplied ?? Optional(output.levels.integrated - analysis.levels.integrated) {
                     done("Gain", output.finalGainMode == "limited" ? "With \(String(format: "%.1f", output.limiting ?? 0)) dB of peak limiting" : "One exact change", signed(gain) + " dB")
                 }

@@ -515,9 +515,15 @@ enum AudioEngine {
     }
     /// Even out: clip gain sections that bring clearly loud or quiet stretches back to the cue's typical level.
     static func evenOutRegions(_ input: URL, info: MediaInfo, tolerance: Double = ClipGain.evenOutTolerance, keeping existing: [GainRegion], token: Cancellation) throws -> [GainRegion] {
-        let curve = try momentaryLoudness(input, duration: info.duration, token: token)
+        try evenOutPlan(input, info: info, tolerance: tolerance, keeping: existing, skipMusic: false, token: token).regions
+    }
+    /// Even out for Quick Level (2.0.1): skips cues that play continuously like music, since a song's dynamics are intentional.
+    static func evenOutPlan(_ input: URL, info: MediaInfo, tolerance: Double = ClipGain.evenOutTolerance, keeping existing: [GainRegion], skipMusic: Bool,
+                            token: Cancellation) throws -> (regions: [GainRegion], soundsLikeMusic: Bool) {
+        let curve = try momentaryLoudness(input, duration: info.duration, token: token).map(Double.init)
+        if skipMusic, ClipGain.soundsLikeMusic(momentary: curve) { return ([], true) }
         let peaks = try detailWaveform(input, duration: info.duration, token: token)
-        return ClipGain.evenOut(momentary: curve.map(Double.init), duration: info.duration, tolerance: tolerance, avoiding: existing, peaks: peaks)
+        return (ClipGain.evenOut(momentary: curve, duration: info.duration, tolerance: tolerance, avoiding: existing, peaks: peaks), false)
     }
     /// Short-term (3 s) loudness every 100 ms across the whole file (not thinned), for reference shapes.
     static func shortTermLoudness(_ input: URL, duration: Double, token: Cancellation) throws -> [Float] {
