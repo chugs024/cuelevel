@@ -66,7 +66,13 @@ struct CueEditorView: View {
             await player.load(source, duration: model.duration)
             pushToPlayer()
         }
-        .task { await waves.load(source, foldSurround: fold, duration: model.duration) }
+        .task {
+            await waves.load(source, foldSurround: fold, duration: model.duration)
+            #if targetEnvironment(simulator)
+            // Build-server screenshots: a deep zoom (a few milliseconds) to check the sample-level drawing.
+            if ProcessInfo.processInfo.arguments.contains("-editZoom") { model.window = 10.0 ... 10.004 }
+            #endif
+        }
         .task {
             guard content == nil else { return }
             if let found = await ContentLanes.analyze(source) { content = found; store.saveContentSegments(model.cueID, found) } else { contentFailed = true }
