@@ -105,7 +105,7 @@ jobs:
           # Website: point the download buttons and version text at this release (the page also reads appcast.json live).
           if [[ -f docs/index.html ]]; then
             MB=$(( ($(stat -f%z "$GITHUB_WORKSPACE/build/CueLevel-$VERSION.dmg") + 524288) / 1048576 ))
-            sed -i '' -E "s#releases/download/v[0-9.]+/CueLevel-[0-9.]+\.dmg#releases/download/v$VERSION/CueLevel-$VERSION.dmg#g; s#Version [0-9.]+#Version $VERSION#g; s#CueLevel [0-9]+\.[0-9]+\.[0-9]+\.#CueLevel $VERSION.#g; s#[0-9]+ MB#$MB MB#g" docs/index.html
+            sed -i '' -E "s#releases/download/v[0-9.]+/CueLevel-[0-9.]+\.dmg#releases/download/v$VERSION/CueLevel-$VERSION.dmg#g; s#Version [0-9.]+#Version $VERSION#g; s#data-ver>[0-9.]+<#data-ver>$VERSION<#g; s#CueLevel [0-9]+\.[0-9]+\.[0-9]+\.#CueLevel $VERSION.#g; s#[0-9]+ MB#$MB MB#g" docs/index.html
             sed -i '' -E "s#releases/download/v[0-9.]+/#releases/download/v$VERSION/#g" docs/licenses.html 2>/dev/null || true
           fi
           git config user.name "CueLevel release"; git config user.email "releases@users.noreply.github.com"
