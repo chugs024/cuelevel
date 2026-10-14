@@ -5,7 +5,13 @@ import AVFoundation
 // CueLevel for iPhone and iPad: the on-device engine (Mobile/Engine) checked against the Mac's FFmpeg engine.
 // Run by Scripts/run-tests.sh on the Mac CI runner, where both engines are available.
 
-func check(_ condition: Bool, _ message: String) { if !condition { fputs("FAIL: \(message)\n", stderr); exit(1) } }
+var failures = 0
+/// Records a failure and carries on, so one run shows every difference (the CI log isn't readable from here, annotations are).
+func check(_ condition: Bool, _ message: String) { if !condition { failures += 1; print("::error::FAIL: \(message)"); fputs("FAIL: \(message)\n", stderr) } }
+var notes: [String] = []
+/// Collected and printed as one annotation (GitHub keeps only a few per step).
+func note(_ text: String) { notes.append(text); print(text) }
+func flushNotes() { print("::notice title=Device engine vs FFmpeg::" + notes.joined(separator: "%0A")) }
 func near(_ a: Double, _ b: Double, _ tolerance: Double) -> Bool { abs(a - b) <= tolerance }
 func f(_ v: Double) -> String { String(format: "%7.2f", v) }
 final class Bytes: @unchecked Sendable { var data = Data() }
@@ -24,7 +30,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
     let reference = try AudioEngine.measure(url, token: token, duration: info.duration)
     let (mobile, data) = try await MobileEngine.analyze(url)
     let m = mobile.levels
-    print("\(name.padding(toLength: 26, withPad: " ", startingAt: 0)) I \(f(m.integrated)) vs \(f(reference.integrated))   TP \(f(m.truePeak)) vs \(f(reference.truePeak))   LRA \(f(m.loudnessRange)) vs \(f(reference.loudnessRange))   peak \(f(m.samplePeak ?? 0)) vs \(f(reference.samplePeak ?? 0))")
+    note("\(name): I \(f(m.integrated)) vs \(f(reference.integrated))   TP \(f(m.truePeak)) vs \(f(reference.truePeak))   LRA \(f(m.loudnessRange)) vs \(f(reference.loudnessRange))   peak \(f(m.samplePeak ?? 0)) vs \(f(reference.samplePeak ?? 0))")
     check(near(m.integrated, reference.integrated, integrated), "\(name): integrated loudness matches FFmpeg")
     check(near(m.truePeak, reference.truePeak, truePeak), "\(name): true peak matches FFmpeg")
     check(near(m.loudnessRange, reference.loudnessRange, range), "\(name): loudness range matches FFmpeg")
@@ -38,7 +44,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
     check(abs(ff.count - ours.count) <= 3, "\(name): momentary readings every 100 ms (\(ours.count) vs \(ff.count))")
     let audible = (4..<n).filter { ff[$0] > -60 && ours[$0] > -60 }
     let meanError = audible.map { abs(ff[$0] - ours[$0]) }.reduce(0, +) / Double(max(1, audible.count))
-    print("   momentary: \(ours.count) readings, mean difference \(String(format: "%.3f", meanError)) LU")
+    note("\(name) momentary: \(ours.count) readings, mean difference \(String(format: "%.3f", meanError)) LU")
     check(meanError < 0.3, "\(name): momentary loudness follows FFmpeg's ebur128")
     return (mobile, data)
 }
@@ -86,8 +92,8 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         let ffPeaks = try AudioEngine.detailWaveform(file("speech.wav"), duration: speech.info.duration, token: token)
         let ffRegions = ClipGain.evenOut(momentary: ffMomentary, duration: speech.info.duration, peaks: ffPeaks)
         let ourRegions = MobileEngine.evenOutPlan(speechData, duration: speech.info.duration, tolerance: ClipGain.evenOutTolerance, keeping: [], skipMusic: false).regions
-        print("   FFmpeg: " + ffRegions.map { String(format: "%.1f–%.1f s %+.1f dB", $0.start, $0.end, $0.gain) }.joined(separator: ", "))
-        print("   device: " + ourRegions.map { String(format: "%.1f–%.1f s %+.1f dB", $0.start, $0.end, $0.gain) }.joined(separator: ", "))
+        note("Even out FFmpeg: " + ffRegions.map { String(format: "%.1f–%.1f s %+.1f dB", $0.start, $0.end, $0.gain) }.joined(separator: ", "))
+        note("Even out device: " + ourRegions.map { String(format: "%.1f–%.1f s %+.1f dB", $0.start, $0.end, $0.gain) }.joined(separator: ", "))
         check(ourRegions.count == ffRegions.count, "Even out finds the same number of stretches")
         for (a, b) in zip(ourRegions, ffRegions) {
             check(near(a.gain, b.gain, 1.0) && near(a.start, b.start, 0.35) && near(a.end, b.end, 0.35), "Even out stretch matches FFmpeg's (\(a.start)–\(a.end) \(a.gain) dB)")
@@ -101,7 +107,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         let levelled = try await MobileEngine.level(file("speech.wav"), analysis: speech, settings: settings, directory: out)
         let levelledInfo = try AudioEngine.inspect(levelled.url, token: token)
         let levelledFF = try AudioEngine.measure(levelled.url, token: token, duration: levelledInfo.duration)
-        print("   speech → \(levelled.url.lastPathComponent): \(f(levelledFF.integrated)) LUFS, \(f(levelledFF.truePeak)) dBTP (gain \(String(format: "%+.2f", levelled.gainApplied ?? 0)), shortfall \(String(format: "%.2f", levelled.shortfall ?? 0)))")
+        note("speech → \(levelled.url.lastPathComponent): \(f(levelledFF.integrated)) LUFS, \(f(levelledFF.truePeak)) dBTP (gain \(String(format: "%+.2f", levelled.gainApplied ?? 0)), shortfall \(String(format: "%.2f", levelled.shortfall ?? 0)))")
         check(levelled.url.lastPathComponent == "speech_LVL-18.wav", "output named with the target")
         check(near(levelledFF.integrated, settings.target - (levelled.shortfall ?? 0), 0.2), "levelled audio reaches the target (FFmpeg)")
         check(levelledFF.truePeak <= settings.peak + 0.2, "levelled audio stays under the ceiling (FFmpeg)")
@@ -115,7 +121,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         try source.read(into: a, frameCount: 44100); try result.read(into: b, frameCount: 44100)
         var worst: Float = 0
         for i in 0..<Int(a.frameLength) { worst = max(worst, abs(b.floatChannelData![0][i] / Float(gain) - a.floatChannelData![0][i] * 0.70710677)) }
-        print("   largest sample difference after removing the gain: \(worst)")
+        note("largest sample difference after removing the gain: \(worst)")
         check(worst < 2e-6, "levelling is one exact gain change")
 
         // Float sources stay float; 96 kHz stays 96 kHz.
@@ -132,7 +138,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         let editedOut = try await MobileEngine.level(file("speech.wav"), analysis: speech, settings: edited, directory: out)
         let editedInfo = try AudioEngine.inspect(editedOut.url, token: token)
         let editedFF = try AudioEngine.measure(editedOut.url, token: token, duration: editedInfo.duration)
-        print("   edited → \(f(editedInfo.duration)) s, \(f(editedFF.integrated)) LUFS, \(f(editedFF.truePeak)) dBTP")
+        note("edited → \(f(editedInfo.duration)) s, \(f(editedFF.integrated)) LUFS, \(f(editedFF.truePeak)) dBTP")
         check(near(editedInfo.duration, 24.0, 0.01), "in and out points cut the audio file")
         check(near(editedFF.integrated, settings.target - (editedOut.shortfall ?? 0), 0.25), "edited cue is measured after the edits, then levelled")
         check(editedOut.warnings.contains { $0.contains("1 section") }, "hand-drawn sections are noted")
@@ -143,7 +149,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         let video = try await MobileEngine.level(file("show.mov"), analysis: show, settings: settings, directory: out)
         let videoInfo = try AudioEngine.inspect(video.url, token: token)
         let videoFF = try AudioEngine.measure(video.url, token: token, duration: videoInfo.duration)
-        print("   video → \(video.url.lastPathComponent): \(f(videoFF.integrated)) LUFS, \(f(videoFF.truePeak)) dBTP, \(videoInfo.audioStreams ?? 0) audio tracks, \(videoInfo.audioDescription)")
+        note("video → \(video.url.lastPathComponent): \(f(videoFF.integrated)) LUFS, \(f(videoFF.truePeak)) dBTP, \(videoInfo.audioStreams ?? 0) audio tracks, \(videoInfo.audioDescription)")
         check(video.url.pathExtension == "mov", "video saved as MOV")
         check(try videoDigest(video.url) == videoDigest(file("show.mov")), "picture copied bit for bit")
         check(videoInfo.audioStreams == 2, "second audio track kept")
@@ -166,6 +172,8 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         try ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "5", "-c:a", "pcm_s16le", file("silent.wav").path])
         do { _ = try await MobileEngine.analyze(file("silent.wav")); check(false, "silent file rejected") } catch { check(error.localizedDescription.contains("silent"), "silent file reason: \(error.localizedDescription)") }
 
+        flushNotes()
+        if failures > 0 { fputs("\(failures) mobile engine checks failed\n", stderr); exit(1) }
         print("MOBILE ENGINE CHECKS PASSED")
     }
 }

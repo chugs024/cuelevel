@@ -10,3 +10,5 @@ Reference Audio/
 *.mov
 *.mp4
 .DS_Store
+Mobile/*.xcodeproj/
+Mobile/Resources/Info.plist

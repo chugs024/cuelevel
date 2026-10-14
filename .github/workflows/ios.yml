@@ -1,0 +1,66 @@
+name: iPhone and iPad app
+on:
+  push:
+    branches: [main, dev]
+    paths: ["Mobile/**", "Source/Model.swift", "Source/ClipGain.swift", "Source/CueEdit.swift", "Source/ReferenceLibrary.swift", "Source/Plan.swift", "Reference Library/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: XcodeGen
+        run: brew install xcodegen && cd Mobile && xcodegen generate
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project Mobile/CueLevelMobile.xcodeproj -scheme CueLevel -sdk iphonesimulator -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log | grep -E "error:|warning: .*Mobile/|BUILD" || true
+          if ! grep -q "BUILD SUCCEEDED" build.log; then grep -E "error:" build.log | head -20 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; fi
+      - name: FFmpeg engine (cached, for example cues)
+        id: engine
+        uses: actions/cache/restore@v4
+        with:
+          path: Engine
+          key: ffmpeg-7.1-lgpl-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-ffmpeg-lgpl.sh') }}
+      - name: Build LGPL FFmpeg
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: Scripts/build-ffmpeg-lgpl.sh Engine
+      - name: Run the app on the simulator and take screenshots
+        run: |
+          set -x
+          DEMO="$RUNNER_TEMP/Example show"; SHOTS="$PWD/build/screens"; mkdir -p "$SHOTS"
+          Mobile/Scripts/make-demo-cues.sh "$PWD/Engine/ffmpeg" "$DEMO"
+          APP=$(find build/ios -name "CueLevel.app" -path "*iphonesimulator*" | head -1)
+          shoot() { # device name, prefix
+            UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name']=='$1'))")
+            xcrun simctl boot "$UDID" || true; xcrun simctl bootstatus "$UDID" -b
+            xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 || true
+            xcrun simctl install "$UDID" "$APP"
+            xcrun simctl launch "$UDID" com.cuelevel.app; sleep 6; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-1-empty.png"
+            xcrun simctl terminate "$UDID" com.cuelevel.app || true
+            xcrun simctl launch "$UDID" com.cuelevel.app -importFolder "$DEMO"; sleep 40; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-2-measured.png"
+            xcrun simctl terminate "$UDID" com.cuelevel.app || true
+            xcrun simctl launch "$UDID" com.cuelevel.app -select 2; sleep 6; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-3-plan.png"
+            xcrun simctl terminate "$UDID" com.cuelevel.app || true
+            xcrun simctl launch "$UDID" com.cuelevel.app -levelAll; sleep 60; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-4-levelled.png"
+            xcrun simctl terminate "$UDID" com.cuelevel.app || true
+            for n in 2 3 4; do xcrun simctl launch "$UDID" com.cuelevel.app -select $n; sleep 6; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-5-result-$n.png"; xcrun simctl terminate "$UDID" com.cuelevel.app || true; done
+            DATA=$(xcrun simctl get_app_container "$UDID" com.cuelevel.app data)
+            ls -la "$DATA/Documents/Levelled" | tee "$SHOTS/$2-levelled-files.txt"
+            for f in "$DATA/Documents/Levelled"/*; do "$PWD/Engine/ffmpeg" -hide_banner -nostats -i "$f" -map 0:a:0 -af loudnorm=I=-18:print_format=summary -f null - 2>&1 | grep -E "Input Integrated|Input True Peak" | sed "s|^|$(basename "$f"): |" | tee -a "$SHOTS/$2-levelled-files.txt"; done
+            cp "$DATA/Library/Application Support/session.json" "$SHOTS/$2-session.json" || true
+            xcrun simctl shutdown "$UDID" || true
+          }
+          shoot "iPhone 16 Pro" iphone
+          shoot "iPad Pro 13-inch (M4)" ipad || echo "iPad simulator not available"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-screens
+          path: build/screens
+          retention-days: 14
