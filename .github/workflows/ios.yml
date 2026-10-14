@@ -58,6 +58,19 @@ jobs:
           }
           shoot "iPhone 16 Pro" iphone
           shoot "iPad Pro 13-inch (M4)" ipad || echo "iPad simulator not available"
+      - name: Report results as annotations
+        if: always()
+        run: |
+          # Small JPEGs of each screen as annotations (readable through the API where artifacts aren't), plus the levelled files.
+          cd build/screens 2>/dev/null || exit 0
+          for f in iphone-*.txt ipad-*.txt; do [[ -f "$f" ]] && echo "::notice title=$f::$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}')"; done
+          n=0
+          for f in iphone-*.png ipad-*.png; do
+            [[ -f "$f" ]] || continue
+            n=$((n+1)); [[ $n -gt 9 ]] && break
+            sips -s format jpeg -s formatOptions 55 -Z 760 "$f" --out "/tmp/${f%.png}.jpg" >/dev/null
+            echo "::notice title=shot ${f%.png}::$(base64 -i "/tmp/${f%.png}.jpg" | tr -d '\n')"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
