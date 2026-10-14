@@ -442,7 +442,21 @@ enum AudioEngine {
     }
     static func inspect(_ input: URL, token: Cancellation) throws -> MediaInfo {
         guard FileManager.default.isReadableFile(atPath: input.path) else { throw cueError("Source file unavailable. Reconnect the drive or add the file again.") }
-        let log = try run(["-i", input.path, "-map", "0:a:0", "-t", "0", "-f", "null", "-"], token: token)
+        if let bytes = (try? FileManager.default.attributesOfItem(atPath: input.path)[.size] as? NSNumber)?.int64Value, bytes == 0 {
+            throw cueError("This file is empty (0 bytes). It may not have finished copying.")
+        }
+        let log: String
+        do { log = try run(["-i", input.path, "-map", "0:a:0", "-t", "0", "-f", "null", "-"], token: token) }
+        catch is CancellationError { throw CancellationError() }
+        catch {
+            // 2.0.1: plain-language reasons instead of the engine's log.
+            let text = error.localizedDescription
+            if text.contains("matches no streams") { throw cueError("This file has no audio track, so there's nothing to level.") }
+            if ["Invalid data found", "could not find codec", "moov atom not found", "End of file", "Invalid argument", "unspecified size"].contains(where: text.contains) {
+                throw cueError("CueLevel can't read this file. It may be damaged, incomplete, or not audio or video.")
+            }
+            throw error
+        }
         let source = String(log.components(separatedBy: "Stream mapping:").first ?? log)
         let streams = source.components(separatedBy: "\n").filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("Stream #0:") }
         let audio = streams.filter { $0.contains("Audio:") }

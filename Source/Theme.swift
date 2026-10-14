@@ -182,13 +182,14 @@ struct StageLabel: View {
             switch stage {
             case .levelled, .alreadyGood: return Theme.good
             case .needsLook: return Theme.changed
-            case .failed: return Theme.hot
+            case .failed: return job.message.localizedCaseInsensitiveContains("silent") ? Theme.muted : Theme.hot
             case .working: return Theme.bone
             default: return Theme.muted
             }
         }()
         let text: String = {
             if stage == .working { return "\(Int(job.progress * 100))%" }
+            if stage == .failed, job.message.localizedCaseInsensitiveContains("silent") { return "Silent" }
             if stage == .needsLook, let short = job.output?.shortfall, short > 0.05 { return String(format: "%.1f dB under", short) }
             return stage.title
         }()

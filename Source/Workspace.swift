@@ -50,6 +50,13 @@ struct LoudnessPreset: Identifiable, Hashable {
                       LoudnessPreset(name: "Music streaming · −14 LUFS", target: -14, peak: -1)]
 }
 /// File types the watch folder picks up.
+/// Runs blocking work (FFmpeg runs, file copies) on a GCD thread. Task.detached would park it on Swift's small cooperative
+/// pool, where a few long FFmpeg runs could starve everything else (2.0.1: adding 25 files froze levelling at "Starting").
+func offPool<T>(_ work: @escaping () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async { continuation.resume(with: Result { try work() }) }
+    }
+}
 let mediaExtensions: Set<String> = ["wav", "wave", "aif", "aiff", "aifc", "caf", "mp3", "m4a", "aac", "flac", "ogg", "opus", "wma", "mp4", "m4v", "mov", "qt", "mkv", "mka", "webm", "avi", "mxf", "mts", "m2ts", "ts"]
 struct ExportReport: Codable {
     var application = "CueLevel \(appShortVersion)"
@@ -221,6 +228,7 @@ struct ExportReport: Codable {
             // Files dropped while a batch is running are picked up when it finishes.
             if !busy { run(ids: added, render: true) } else { status = "Added \(added.count) to Quick Level — waiting for the current batch" }
         } else if !busy { run(ids: added, render: false) }   // measure everything that was added, not only the selection
+        else { status = "Added \(added.count) file\(added.count == 1 ? "" : "s"). They'll be measured when the current job finishes." }
     }
     func update(_ id: UUID, _ edit: (inout CueJob) -> Void) { if let i = jobs.firstIndex(where: { $0.id == id }) { edit(&jobs[i]) } }
     func progress(_ id: UUID, _ value: Double, _ message: String) {
@@ -255,11 +263,11 @@ struct ExportReport: Codable {
                     let modified = attributes?[.modificationDate] as? Date
                     if render, let existing = current.analysis, size == existing.info.byteCount, modified == existing.info.modified { analysis = existing }
                     else {
-                        analysis = try await Task.detached {
+                        analysis = try await offPool {
                             try AudioEngine.analyze(current.source, token: cancellation) { value, message in
                                 Task { @MainActor in self.progress(id, render ? value * 0.3 : value, message) }
                             }
-                        }.value
+                        }
                     }
                     update(id) { $0.analysis = analysis }
                     var evened = 0
@@ -269,7 +277,7 @@ struct ExportReport: Codable {
                         let manual = all.filter { $0.isAuto != true }, keep = all.filter { $0.isAuto != true || $0.isGap == true }
                         let source = current.source, info = analysis.info
                         let tolerance = references.evenOutTolerance(for: options.mode)
-                        let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: cancellation) }.value
+                        let auto = try await offPool { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: cancellation) }
                         update(id) { $0.clipGain = keep + auto }
                         evened = auto.count
                     }
@@ -287,12 +295,12 @@ struct ExportReport: Codable {
                         let goodReason: String? = quick ? Self.alreadyGoodReason(analysis: analysis, target: cueOptions.target, peak: cueOptions.peak,
                             autoSections: evened, hasEdits: Self.hasHandEdits(latest, duration: analysis.info.duration), library: references, mode: cueOptions.mode) : nil
                         let cueSettings = cueOptions, source = current.source
-                        let result = try await Task.detached { () -> ProcessedAudio in
+                        let result = try await offPool { () -> ProcessedAudio in
                             if goodReason != nil { return try AudioEngine.unchangedCopy(source, analysis: analysis, settings: cueSettings, directory: renderDirectory) }
                             return try AudioEngine.process(source, analysis: analysis, settings: cueSettings, directory: renderDirectory, token: cancellation) { value, message in
                                 Task { @MainActor in self.progress(id, 0.3 + value * 0.7, message) }
                             }
-                        }.value
+                        }
                         update(id) { $0.alreadyGood = goodReason }
                         if let previous = current.output { try? FileManager.default.removeItem(at: previous.url.deletingLastPathComponent()) }
                         update(id) { $0.output = result; $0.exportURL = nil; $0.audioExportURL = nil; $0.progress = 1; $0.status = result.warnings.isEmpty ? .ready : .review; $0.message = result.warnings.isEmpty ? "Ready to export" : "Review notes before export" }
@@ -302,7 +310,7 @@ struct ExportReport: Codable {
                             let destination = Self.uniqueDestination(in: folder, name: Self.levelledName(for: current.source, target: result.settings.target, ext: result.url.pathExtension))
                             let sources = jobs.map(\.source)
                             do {
-                                try await Task.detached { try Self.atomicCopy(from: result.url, to: destination, sources: sources, allowReplace: false) }.value
+                                try await offPool { try Self.atomicCopy(from: result.url, to: destination, sources: sources, allowReplace: false) }
                                 update(id) { $0.exportURL = destination; $0.message = goodReason != nil ? "✓ Already good, no change needed → " + destination.lastPathComponent : (evened > 0 ? "Evened out \(evened) stretch\(evened == 1 ? "" : "es"), levelled → " : (result.warnings.isEmpty ? "Levelled → " : "Levelled with notes → ")) + destination.lastPathComponent }
                             } catch {
                                 update(id) { $0.status = .review; $0.message = "Levelled, but saving to the Quick Level folder failed: \(error.localizedDescription)" }
@@ -326,6 +334,11 @@ struct ExportReport: Codable {
             if quickLevel, !thisRunStopped {
                 let waiting = jobs.filter { $0.output == nil && $0.status == .queued }.map(\.id)
                 if !waiting.isEmpty { run(ids: waiting, render: true) }
+            }
+            // 2.0.1: files added while CueLevel was busy are measured as soon as it's free.
+            if !thisRunStopped {
+                let unmeasured = jobs.filter { $0.analysis == nil && $0.status == .queued }.map(\.id)
+                if !unmeasured.isEmpty { run(ids: unmeasured, render: false) }
             }
         }
     }
@@ -370,10 +383,10 @@ struct ExportReport: Codable {
         busy = true; let cancellation = Cancellation(); token = cancellation; status = "Measuring reference"
         Task {
             do {
-                let reference = try await Task.detached {
+                let reference = try await offPool {
                     let info = try AudioEngine.inspect(url, token: cancellation)
                     return try AudioEngine.measure(url, token: cancellation, duration: info.duration)
-                }.value
+                }
                 settings.target = min(-12, max(-30, reference.integrated))
                 referenceDescription = "\(url.lastPathComponent) · \(String(format: "%.1f", reference.integrated)) LUFS. Target set to \(String(format: "%.1f", settings.target)) LUFS."
                 status = "Reference measured. Saved presets can retain this target."
@@ -418,6 +431,7 @@ struct ExportReport: Codable {
     @Published var preRoll = 1.0
     /// Momentary loudness (100 ms steps) of whatever is loaded in the player, for the live meter.
     @Published var meterCurve: [Float] = []
+    private var meterToken: Cancellation?
     private var meterCache: [URL: [Float]] = [:]
     @Published var showShortcuts = false
     var selectedEdit: CueEdit { selected?.edit ?? CueEdit() }
@@ -447,7 +461,7 @@ struct ExportReport: Codable {
             defer { measuringSection = false }
             do {
                 let tolerance = references.evenOutTolerance(for: settings.mode)
-                let auto = try await Task.detached { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: Cancellation()) }.value
+                let auto = try await offPool { try AudioEngine.evenOutRegions(source, info: info, tolerance: tolerance, keeping: manual, token: Cancellation()) }
                 setRegions(keep + auto)
                 status = auto.isEmpty ? "Already even: nothing is more than \(Int(ClipGain.evenOutTolerance)) dB from the typical level" : "Even out made \(auto.count) section\(auto.count == 1 ? "" : "s"). Adjust any of them, then click Done editing."
             } catch { self.error = error.localizedDescription }
@@ -542,7 +556,7 @@ struct ExportReport: Codable {
         Task {
             defer { measuringSection = false }
             do {
-                let gaps = try await Task.detached { try AudioEngine.gapRegions(source, info: info, depth: depth, token: Cancellation()) }.value
+                let gaps = try await offPool { try AudioEngine.gapRegions(source, info: info, depth: depth, token: Cancellation()) }
                 setRegions(keep + gaps)
                 status = gaps.isEmpty ? "No pauses long enough to lower" : "Lowered \(gaps.count) pause\(gaps.count == 1 ? "" : "s") by \(Int(depth)) dB"
             } catch { self.error = error.localizedDescription }
@@ -631,7 +645,7 @@ struct ExportReport: Codable {
         Task {
             defer { busy = false; self.token = nil }
             do {
-                let result = try await Task.detached { () -> (ReferenceLibrary, Int) in
+                let result = try await offPool { () -> (ReferenceLibrary, Int) in
                     let files = (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey])?.allObjects as? [URL] ?? [])
                         .filter { mediaExtensions.contains($0.pathExtension.lowercased()) }
                     var profiles: [String: LoudnessProfile] = [:]
@@ -643,7 +657,7 @@ struct ExportReport: Codable {
                         if let p = try AudioEngine.loudnessProfile(file, duration: info.duration, token: token) { profiles[sha] = p }
                     }
                     return (try ReferenceLibrary.setProfiles(profiles, in: libraryFolder), profiles.count)
-                }.value
+                }
                 references = result.0
                 status = result.1 == 0 ? "No recordings in that folder match your references" : "Measured the shape of \(result.1) reference\(result.1 == 1 ? "" : "s")"
             } catch is CancellationError { status = "Stopped" }
@@ -653,10 +667,14 @@ struct ExportReport: Codable {
 
     // MARK: Live meter (1.5)
     func loadMeterCurve(for url: URL, duration: Double) {
+        meterToken?.cancel(); meterToken = nil
         if let cached = meterCache[url] { meterCurve = cached; return }
         meterCurve = []
+        // 2.0.1: only for measured cues, and the previous cue's meter pass is stopped (clicking down a long list used to queue one FFmpeg run per cue).
+        guard duration > 0 else { return }
+        let token = Cancellation(); meterToken = token
         Task {
-            guard let curve = try? await Task.detached(operation: { try AudioEngine.momentaryLoudness(url, duration: duration, token: Cancellation()) }).value else { return }
+            guard let curve = try? await offPool({ try AudioEngine.momentaryLoudness(url, duration: duration, token: token) }) else { return }
             meterCache[url] = curve
             if player.currentItem.flatMap({ ($0.asset as? AVURLAsset)?.url }) == url { meterCurve = curve }
         }
@@ -698,7 +716,7 @@ struct ExportReport: Codable {
         detailFor = job.id; detailWaveform = []
         let source = job.source, id = job.id
         Task {
-            let peaks = try? await Task.detached { try AudioEngine.detailWaveform(source, duration: info.duration, token: Cancellation()) }.value
+            let peaks = try? await offPool { try AudioEngine.detailWaveform(source, duration: info.duration, token: Cancellation()) }
             if selection == id, let peaks { detailWaveform = peaks }
         }
     }
@@ -746,7 +764,7 @@ struct ExportReport: Codable {
         Task {
             defer { measuringSection = false }
             do {
-                let value = try await Task.detached { try AudioEngine.sectionLoudness(source, info: info, start: r.start, end: r.end, regions: regions, token: Cancellation()) }.value
+                let value = try await offPool { try AudioEngine.sectionLoudness(source, info: info, start: r.start, end: r.end, regions: regions, token: Cancellation()) }
                 if selectedRegions == regions { sectionLoudness[r.id] = value }
             } catch { self.error = error.localizedDescription }
         }
@@ -791,10 +809,10 @@ struct ExportReport: Codable {
         Task {
             defer { measuringSection = false }
             do {
-                let (good, section) = try await Task.detached {
+                let (good, section) = try await offPool {
                     (try AudioEngine.sectionLoudness(source, info: info, start: reference.start, end: reference.end, regions: others, token: token),
                      try AudioEngine.sectionLoudness(source, info: info, start: target.start, end: target.end, regions: others, token: token))
-                }.value
+                }
                 guard let gain = ClipGain.matchGain(reference: good, section: section) else { throw cueError("One of the sections is silent, so it cannot be matched.") }
                 var matched = target; matched.gain = gain; updateRegion(matched)
                 status = "Matched: section was \(String(format: "%.1f", section)) LUFS, reference \(String(format: "%.1f", good)) LUFS → \(gain >= 0 ? "+" : "")\(String(format: "%.1f", gain)) dB"
@@ -816,12 +834,12 @@ struct ExportReport: Codable {
             defer { busy = false }
             do {
                 guard FileManager.default.isReadableFile(atPath: source.path) else { throw cueError("The original file is no longer at \(source.path). Add it again, then add it as a reference.") }
-                let library = try await Task.detached {
+                let library = try await offPool {
                     let sha = try Updater.sha256(of: source)
                     let profile = try AudioEngine.loudnessProfile(source, duration: analysis.info.duration, token: Cancellation())
                     let record = ReferenceLibrary.record(for: analysis, name: source.lastPathComponent, sha256: sha, category: category, note: note, version: appShortVersion, profile: profile)
                     return try ReferenceLibrary.add(record, into: folder)
-                }.value
+                }
                 references = library
                 status = "Added to \(category.rawValue) references · \(library.summary)"
             } catch { self.error = error.localizedDescription; status = "Reference not added" }
@@ -852,7 +870,7 @@ struct ExportReport: Codable {
         let sources = jobs.map(\.source)
         Task {
             do {
-                try await Task.detached { try Self.atomicCopy(from: exportSource, to: target, sources: sources) }.value
+                try await offPool { try Self.atomicCopy(from: exportSource, to: target, sources: sources) }
                 update(job.id) { if audioCopy { $0.audioExportURL = target } else { $0.exportURL = target } }; status = "Exported \(target.lastPathComponent)"; persist()
                 NSWorkspace.shared.activateFileViewerSelecting([target])
             } catch { self.error = error.localizedDescription; status = "Export failed; cached output is available to retry" }
@@ -1056,7 +1074,7 @@ struct ExportReport: Codable {
                 status = "Exporting \(destination.lastPathComponent)…"
                 let target = destination
                 do {
-                    try await Task.detached { try Self.atomicCopy(from: file, to: target, sources: sources, allowReplace: false) }.value
+                    try await offPool { try Self.atomicCopy(from: file, to: target, sources: sources, allowReplace: false) }
                     update(job.id) { if file == result.url { $0.exportURL = target } else { $0.audioExportURL = target } }; successes += 1
                 } catch { errors.append("\(file.lastPathComponent): \(error.localizedDescription)") }
             }

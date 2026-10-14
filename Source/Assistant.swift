@@ -28,15 +28,21 @@ struct AssistantPanel: View {
             } else {
                 plan(job, analysis)
             }
-        } else if stage == .working || stage == .waiting {
+        } else if stage == .working {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Measuring").sectionTitle()
                 Text(job.message).hint()
                 ProgressView(value: job.progress).tint(Theme.good)
             }
+        } else if stage == .waiting {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Waiting to be measured").sectionTitle()
+                Text(model.busy ? "CueLevel will measure this cue when the current job finishes." : "This cue hasn't been measured yet.").hint()
+                Button("Measure now") { model.analyze() }.buttonStyle(CLButton()).disabled(model.busy)
+            }
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                Text(stage == .failed ? "CueLevel couldn't open this file" : "Not measured yet").sectionTitle()
+                Text(stage == .failed ? (job.message.localizedCaseInsensitiveContains("silent") ? "This cue is silent" : "CueLevel can't level this file") : "Not measured yet").sectionTitle()
                 if stage == .failed { Text(job.message).hint().textSelection(.enabled) }
                 Button("Measure again") { model.analyze() }.buttonStyle(CLButton()).disabled(model.busy)
             }

@@ -581,6 +581,16 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let expanded = Workspace.expandFolders([dropped, speechLike]).map { $0.lastPathComponent }
         check(expanded == ["a 2.mp3", "a 10.mp3", "b.wav", "c.MOV", speechLike.lastPathComponent], "folder expanded: \(expanded)")
         print("PASS: folder drops")
+
+        // 34. 2.0.1: unreadable files get plain reasons.
+        func reason(_ url: URL) -> String { do { _ = try AudioEngine.inspect(url, token: Cancellation()); return "" } catch { return error.localizedDescription } }
+        let empty = area.appendingPathComponent("empty.wav"); try Data().write(to: empty)
+        let fake = area.appendingPathComponent("fake.mp3"); try Data("not audio".utf8).write(to: fake)
+        let silentVideo = try make("picture-only.mp4", ["-f","lavfi","-i","testsrc2=s=320x240:r=25:d=2","-c:v","mpeg4"])
+        check(reason(empty).contains("empty"), "empty: \(reason(empty))")
+        check(reason(fake).contains("can't read"), "fake: \(reason(fake))")
+        check(reason(silentVideo).contains("no audio track"), "no audio: \(reason(silentVideo))")
+        print("PASS: plain reasons for unreadable files")
         print("ALL 1.1 TESTS PASSED")
     }
 }

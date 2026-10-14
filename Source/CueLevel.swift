@@ -40,7 +40,16 @@ struct ContentView: View {
         .tint(Theme.good)
         .preferredColorScheme(.dark)
         .onDrop(of: [UTType.fileURL], isTargeted: $hovering) { providers in
-            for provider in providers { _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in model.add([url]) } } } }
+            // 2.0.1: gather every dropped file first, then add them in one go (one add per file left all but the first waiting).
+            let group = DispatchGroup(), lock = NSLock(); var urls: [(Int, URL)] = []
+            for (index, provider) in providers.enumerated() {
+                group.enter()
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    if let url { lock.lock(); urls.append((index, url)); lock.unlock() }
+                    group.leave()
+                }
+            }
+            group.notify(queue: .main) { model.add(urls.sorted { $0.0 < $1.0 }.map(\.1)) }
             return !providers.isEmpty
         }
         .overlay { if hovering { dropOverlay } }
@@ -248,7 +257,9 @@ struct ContentView: View {
                 ProgressView(value: job.progress).tint(Theme.good)
             }.card()
         } else if job.status == .failed {
-            notice(job.message, tone: .hot)
+            notice(job.message, tone: job.message.localizedCaseInsensitiveContains("silent") ? .neutral : .hot)
+        } else {
+            notice(model.busy ? "Waiting to be measured. CueLevel will get to it when the current job finishes." : "Not measured yet. Select Measure now on the right.", tone: .neutral)
         }
     }
     func header(_ job: CueJob) -> some View {

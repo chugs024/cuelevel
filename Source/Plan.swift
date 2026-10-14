@@ -26,7 +26,7 @@ enum CueStage: Equatable {
         case .levelled: return "Levelled"
         case .alreadyGood: return "Already good"
         case .needsLook: return "Needs a look"
-        case .failed: return "Couldn't open"
+        case .failed: return "Can't level"
         case .stopped: return "Stopped"
         }
     }
