@@ -58,19 +58,54 @@ jobs:
           }
           shoot "iPhone 16 Pro" iphone
           shoot "iPad Pro 13-inch (M4)" ipad || echo "iPad simulator not available"
-      - name: Report results as annotations
+      - name: Prepare screenshot annotations
         if: always()
         run: |
-          # Small JPEGs of each screen as annotations (readable through the API where artifacts aren't), plus the levelled files.
-          cd build/screens 2>/dev/null || exit 0
-          for f in iphone-*.txt ipad-*.txt; do [[ -f "$f" ]] && echo "::notice title=$f::$(sed 's/%/%25/g' "$f" | awk '{printf "%s%%0A", $0}')"; done
-          n=0
-          for f in iphone-*.png ipad-*.png; do
+          # GitHub keeps annotations to 4 KB each, 10 per step, 50 per job: small WebP images split into parts.
+          mkdir -p build/ann; cd build/screens 2>/dev/null || exit 0
+          for f in iphone-*.png ipad-1-empty.png ipad-5-result-2.png; do
             [[ -f "$f" ]] || continue
-            n=$((n+1)); [[ $n -gt 9 ]] && break
-            sips -s format jpeg -s formatOptions 55 -Z 760 "$f" --out "/tmp/${f%.png}.jpg" >/dev/null
-            echo "::notice title=shot ${f%.png}::$(base64 -i "/tmp/${f%.png}.jpg" | tr -d '\n')"
+            sips -s format jpeg -s formatOptions 40 -Z 400 "$f" --out "../ann/${f%.png}.jpg" >/dev/null || continue
+            base64 -i "../ann/${f%.png}.jpg" | tr -d '\n' | fold -w 3900 > "../ann/${f%.png}.b64"
           done
+          python3 - <<'PY'
+          import json, glob, os
+          parts = []
+          for b in sorted(glob.glob('../ann/*.b64')):
+              chunks = open(b).read().split()
+              name = os.path.basename(b)[:-4]
+              parts += [f"::notice title=shot {name} {i+1}/{len(chunks)}::{c}" for i, c in enumerate(chunks)]
+          for f in glob.glob('*-levelled-files.txt'):
+              lines = [l.strip() for l in open(f) if 'Input' in l]
+              parts.append(f"::notice title={f}::" + "%0A".join(lines)[:3900])
+          for f in glob.glob('*-session.json'):
+              try:
+                  s = json.load(open(f))
+                  lines = []
+                  for c in s['cues']:
+                      o = c.get('output') or {}
+                      lines.append(f"{c['name']}: {c['state']}, gain {o.get('gainApplied')}, shortfall {o.get('shortfall')}, warnings {o.get('warnings')} {c.get('message','')}")
+                  parts.append(f"::notice title={f}::" + "%0A".join(lines)[:3900])
+              except Exception as e:
+                  parts.append(f"::notice title={f}::could not read: {e}")
+          for k in range(5):
+              open(f'../ann/step{k}.txt', 'w').write("\n".join(parts[k * 9:(k + 1) * 9]))
+          PY
+      - name: Screenshots 1
+        if: always()
+        run: cat build/ann/step0.txt 2>/dev/null || true
+      - name: Screenshots 2
+        if: always()
+        run: cat build/ann/step1.txt 2>/dev/null || true
+      - name: Screenshots 3
+        if: always()
+        run: cat build/ann/step2.txt 2>/dev/null || true
+      - name: Screenshots 4
+        if: always()
+        run: cat build/ann/step3.txt 2>/dev/null || true
+      - name: Screenshots 5
+        if: always()
+        run: cat build/ann/step4.txt 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

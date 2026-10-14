@@ -163,8 +163,9 @@ final class CueStore: ObservableObject {
         }
         guard !files.isEmpty else { error = "No audio or video files were found there."; return }
         for file in files {
-            let name = file.deletingPathExtension().lastPathComponent.replacingOccurrences(of: #"^[0-9A-F]{8} "#, with: "", options: .regularExpression)
-            cues.append(MobileCue(name: name, fileName: file.lastPathComponent))
+            // Originals sit in their own folder each (Originals/<tag>/<name>), so file names stay exactly as picked.
+            let folder = file.deletingLastPathComponent().lastPathComponent
+            cues.append(MobileCue(name: file.deletingPathExtension().lastPathComponent, fileName: folder + "/" + file.lastPathComponent))
         }
         if selection == nil { selection = cues.first?.id }
         status = "Added \(files.count) cue\(files.count == 1 ? "" : "s"). Measuring…"
@@ -173,7 +174,9 @@ final class CueStore: ObservableObject {
     /// Copies a picked file into the app so the original is never touched.
     private func copyIn(_ url: URL) -> URL? {
         let tag = String(UUID().uuidString.prefix(8))
-        let destination = Self.originals.appendingPathComponent("\(tag) \(url.lastPathComponent)")
+        let folder = Self.originals.appendingPathComponent(tag, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destination = folder.appendingPathComponent(url.lastPathComponent)
         do {
             var copyError: Error?
             var coordinatorError: NSError?
@@ -191,6 +194,8 @@ final class CueStore: ObservableObject {
     func remove(_ ids: Set<UUID>) {
         for c in cues where ids.contains(c.id) {
             try? FileManager.default.removeItem(at: originalURL(c))
+            let folder = originalURL(c).deletingLastPathComponent()
+            if folder != Self.originals { try? FileManager.default.removeItem(at: folder) }
             try? FileManager.default.removeItem(at: Self.details.appendingPathComponent(c.id.uuidString + ".json"))
         }
         cues.removeAll { ids.contains($0.id) }
