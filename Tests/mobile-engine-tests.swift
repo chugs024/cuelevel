@@ -34,7 +34,9 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
     check(near(m.integrated, reference.integrated, integrated), "\(name): integrated loudness matches FFmpeg")
     check(near(m.truePeak, reference.truePeak, truePeak), "\(name): true peak matches FFmpeg")
     check(near(m.loudnessRange, reference.loudnessRange, range), "\(name): loudness range matches FFmpeg")
-    if let a = m.samplePeak, let b = reference.samplePeak { check(near(a, b, 0.05), "\(name): sample peak matches FFmpeg") }
+    // FFmpeg measures astats after its graph resamples for loudnorm (192 kHz), so its "sample peak" is close to the true peak.
+    // The device reports the real sample peak: never above FFmpeg's, and within the gap to the true peak.
+    if let a = m.samplePeak, let b = reference.samplePeak { check(a <= b + 0.05 && a >= b - 1.0, "\(name): sample peak consistent with FFmpeg (\(a) vs \(b))") }
     if let a = m.dcOffset, let b = reference.dcOffset { check(near(a, b, 0.0005), "\(name): DC offset matches FFmpeg") }
     check(near(mobile.info.duration, info.duration, 0.1), "\(name): duration matches FFmpeg")
     // Momentary loudness every 100 ms, as Even out reads it.
@@ -79,7 +81,11 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         _ = try await compare("1 kHz sine, 48 kHz", file("sine.wav"), integrated: 0.1)
         let (speech, speechData) = try await compare("speech-like, mono 44.1 kHz", file("speech.wav"))
         _ = try await compare("music-like, 96 kHz float", file("music96.wav"))
-        let (inter, _) = try await compare("inter-sample peaks", file("intersample.wav"), truePeak: 0.25)
+        // A sine at a quarter of the sample rate, 45° off its crest: every sample is 3 dB under the true peak.
+        // Its true peak is known exactly (0.9 × 0.7071 after the −3 dB stereo conversion = −3.93 dBTP); FFmpeg's resampler
+        // overshoots it by about 0.6 dB, so this one is checked against the theory instead.
+        let (inter, _) = try await compare("inter-sample peaks", file("intersample.wav"), truePeak: 1.0)
+        check(near(inter.levels.truePeak, 20 * log10(0.9 * 0.70710678), 0.15), "true peak of a quarter-rate sine is exact (\(inter.levels.truePeak))")
         check(inter.levels.truePeak > (inter.levels.samplePeak ?? 0) + 2, "true peak sees the peaks between samples")
         _ = try await compare("AAC (M4A)", file("speech.m4a"), integrated: 0.2)
         _ = try await compare("FLAC", file("speech.flac"))

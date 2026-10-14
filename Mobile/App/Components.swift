@@ -82,11 +82,13 @@ struct LevelRuler: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             GeometryReader { geo in
-                let w = geo.size.width, t = Theme.position(target) * w
+                let w: CGFloat = geo.size.width
+                let t: CGFloat = CGFloat(Theme.position(target)) * w
+                let band: CGFloat = max(8, w / 20)   // ±1 LU around the target
                 ZStack(alignment: .leading) {
                     Capsule().fill(Theme.meter).frame(height: 6)
                     RoundedRectangle(cornerRadius: 4).stroke(Theme.good.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .frame(width: max(8, 2 / 40 * w), height: 16).offset(x: t - max(8, 2 / 40 * w) / 2)
+                        .frame(width: band, height: 16).offset(x: t - band / 2)
                     if let after {
                         let a = Theme.position(after) * w, n = Theme.position(now) * w
                         Capsule().fill(Theme.bone.opacity(0.5)).frame(width: abs(a - n), height: 3).offset(x: min(a, n))
