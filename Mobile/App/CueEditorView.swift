@@ -16,6 +16,8 @@ struct CueEditorView: View {
     @State private var content: [ContentSegment]?
     @State private var contentFailed = false
     @State private var splitChannels = true
+    /// Waveform height (×1 to ×16), for quiet cues; it changes only the drawing.
+    @State private var heightZoom: CGFloat = 1
     @State private var confirmCancel = false
     @State private var loop = false
     private let automatic: EditDraft
@@ -44,7 +46,7 @@ struct CueEditorView: View {
             Divider().overlay(Theme.line)
             HStack(spacing: 0) {
                 VStack(spacing: 8) {
-                    TimelineTrack(model: model, player: player, waves: waves, content: content, contentFailed: contentFailed, split: splitChannels)
+                    TimelineTrack(model: model, player: player, waves: waves, content: content, contentFailed: contentFailed, split: splitChannels, heightZoom: heightZoom)
                     OverviewStrip(model: model, player: player).frame(height: 30)
                     toolStrip
                 }
@@ -70,7 +72,10 @@ struct CueEditorView: View {
             await waves.load(source, foldSurround: fold, duration: model.duration)
             #if targetEnvironment(simulator)
             // Build-server screenshots: a deep zoom (a few milliseconds) to check the sample-level drawing.
-            if ProcessInfo.processInfo.arguments.contains("-editZoom") { model.window = 10.0 ... 10.004 }
+            if ProcessInfo.processInfo.arguments.contains("-editZoom"), let peaks = model.data?.peaks, let i = peaks.indices.max(by: { peaks[$0] < peaks[$1] }) {
+                let t = Double(i) / Double(peaks.count) * model.duration
+                model.window = max(0, t - 0.002) ... t + 0.002
+            }
             #endif
         }
         .task {
@@ -101,7 +106,7 @@ struct CueEditorView: View {
                 Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.bone).lineLimit(1)
                 Text(detailLine).font(.system(size: 11.5)).foregroundStyle(Theme.muted).lineLimit(1)
             }
-            .frame(minWidth: 80, maxWidth: 220, alignment: .leading)
+            .frame(minWidth: 70, maxWidth: 220, alignment: .leading).layoutPriority(-1)
             Spacer(minLength: 8)
             HStack(spacing: 6) {
                 iconButton("backward.end.fill", "Go to start") { player.seek(model.draft.edit.inPoint) }
@@ -117,7 +122,7 @@ struct CueEditorView: View {
             HStack(spacing: 4) {
                 toggleButton("repeat", "Loop what's on screen", on: loop) { loop.toggle() }
                 Button { player.bypass.toggle() } label: {
-                    Text("Bypass").font(.system(size: 13, weight: .semibold))
+                    Text("Bypass").font(.system(size: 13, weight: .semibold)).lineLimit(1).fixedSize()
                         .foregroundStyle(player.bypass ? Theme.base : Theme.text)
                         .padding(.horizontal, 10).frame(height: 30)
                         .background(RoundedRectangle(cornerRadius: 7).fill(player.bypass ? Theme.changed : Theme.raised))
@@ -167,10 +172,20 @@ struct CueEditorView: View {
                 Button { model.addSection(at: player.time > 0 ? player.time : (model.window.lowerBound + model.window.upperBound) / 2) } label: {
                     Label("Section at playhead", systemImage: "plus").font(.system(size: 13, weight: .medium))
                 }.buttonStyle(ToolButton())
-                Text("Drag sideways to mark a stretch · drag it up or down to change its level · two fingers scroll · pinch zooms")
-                    .font(.system(size: 11.5)).foregroundStyle(Theme.dim).lineLimit(1).minimumScaleFactor(0.8)
+                Text("Drag sideways to mark a stretch, then drag it up or down")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.dim).lineLimit(1).minimumScaleFactor(0.75)
             }
             Spacer(minLength: 6)
+            HStack(spacing: 0) {
+                Button { heightZoom = max(1, heightZoom / 2) } label: { Image(systemName: "minus").frame(width: 28, height: 30) }.disabled(heightZoom <= 1)
+                    .accessibilityLabel("Lower waveform height")
+                Image(systemName: "arrow.up.and.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.muted)
+                    .overlay(alignment: .bottomTrailing) { if heightZoom > 1 { Text("×\(Int(heightZoom))").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.changed).offset(x: 10, y: 6) } }
+                Button { heightZoom = min(16, heightZoom * 2) } label: { Image(systemName: "plus").frame(width: 28, height: 30) }.disabled(heightZoom >= 16)
+                    .accessibilityLabel("Raise waveform height")
+            }
+            .font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.text)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Theme.raised))
             if model.analysis.info.channels > 1 {
                 Button { splitChannels.toggle() } label: {
                     Label(splitChannels ? "Channels" : "Combined", systemImage: splitChannels ? "rectangle.split.1x2" : "rectangle").font(.system(size: 13, weight: .medium))
@@ -223,6 +238,7 @@ struct TimelineTrack: View {
     let content: [ContentSegment]?
     let contentFailed: Bool
     let split: Bool
+    var heightZoom: CGFloat = 1
     @Environment(\.displayScale) private var displayScale
 
     enum Target { case inPoint, outPoint, fadeIn, fadeOut, start(UUID), end(UUID), gain(UUID), create(UUID) }
@@ -403,6 +419,7 @@ struct TimelineTrack: View {
         let speech = content.map { ContentLanes.stretches($0, music: false) } ?? []
         let music = content.map { ContentLanes.stretches($0, music: true) } ?? []
         let contentReady = content != nil, failed = contentFailed
+        let hz = heightZoom
         return Canvas { g, size in
             let span = window.upperBound - window.lowerBound
             func px(_ t: Double) -> CGFloat { CGFloat((t - window.lowerBound) / max(0.0001, span)) * W }
@@ -455,7 +472,7 @@ struct TimelineTrack: View {
                             for (k, v) in s.enumerated() {
                                 let tm = Double(a + k) / rate
                                 let xx = px(tm), gain = CGFloat(ClipGain.envelope(at: tm, regions: regions, edit: draft.edit, duration: duration))
-                                let yy = mid - CGFloat(v) * gain * half
+                                let yy = mid - max(-1, min(1, CGFloat(v) * gain * hz)) * half
                                 if k == 0 { line.move(to: CGPoint(x: xx, y: yy)) } else { line.addLine(to: CGPoint(x: xx, y: yy)) }
                                 if samplesPerColumn < 0.12 { dots.addEllipse(in: CGRect(x: xx - 1.6, y: yy - 1.6, width: 3.2, height: 3.2)) }
                             }
@@ -476,13 +493,14 @@ struct TimelineTrack: View {
                             }
                             guard any else { continue }
                             let xx = CGFloat(c) * colW, e = env[c]
-                            let yHi = mid - min(1, CGFloat(hi) * e) * half, yLo = mid - max(-1, CGFloat(lo) * e) * half
+                            let k = e * hz
+                            let yHi = mid - min(1, CGFloat(hi) * k) * half, yLo = mid - max(-1, CGFloat(lo) * k) * half
                             peak.addRect(CGRect(x: xx, y: yHi, width: colW, height: max(colW, yLo - yHi)))
-                            let r = min(1, CGFloat(rms) * e) * half
+                            let r = min(1, CGFloat(rms) * k) * half
                             body.addRect(CGRect(x: xx, y: mid - r, width: colW, height: max(colW, 2 * r)))
                             if edited, abs(e - 1) > 0.001 {
-                                ghost.addRect(CGRect(x: xx, y: mid - min(1, CGFloat(hi)) * half, width: colW, height: colW))
-                                ghost.addRect(CGRect(x: xx, y: mid - max(-1, CGFloat(lo)) * half, width: colW, height: colW))
+                                ghost.addRect(CGRect(x: xx, y: mid - min(1, CGFloat(hi) * hz) * half, width: colW, height: colW))
+                                ghost.addRect(CGRect(x: xx, y: mid - max(-1, CGFloat(lo) * hz) * half, width: colW, height: colW))
                             }
                         }
                         g.fill(peak, with: .color(Theme.bone.opacity(0.62)))
@@ -526,10 +544,16 @@ struct TimelineTrack: View {
                 guard x1 >= 0, x0 <= W else { continue }
                 let selected = r.id == selection
                 let zero = y(0, lanesTop, lanesH), yy = r.muted == true ? lanesTop + lanesH - 4 : y(r.gain, lanesTop, lanesH)
-                var line = Path()
-                line.move(to: CGPoint(x: x0, y: zero)); line.addLine(to: CGPoint(x: px(r.start + r.fadeIn), y: yy))
-                line.addLine(to: CGPoint(x: px(r.end - r.fadeOut), y: yy)); line.addLine(to: CGPoint(x: x1, y: zero))
-                g.stroke(line, with: .color(Theme.changed), style: StrokeStyle(lineWidth: selected ? 2.4 : 1.5, lineJoin: .round))
+                // The 0 dB guide across the section, the ramps (its fades) faintly, and the level line itself.
+                var guide = Path(); guide.move(to: CGPoint(x: x0, y: zero)); guide.addLine(to: CGPoint(x: x1, y: zero))
+                g.stroke(guide, with: .color(Theme.changed.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                let fx0 = px(r.start + r.fadeIn), fx1 = px(r.end - r.fadeOut)
+                var ramps = Path()
+                ramps.move(to: CGPoint(x: x0, y: zero)); ramps.addLine(to: CGPoint(x: fx0, y: yy))
+                ramps.move(to: CGPoint(x: fx1, y: yy)); ramps.addLine(to: CGPoint(x: x1, y: zero))
+                g.stroke(ramps, with: .color(Theme.changed.opacity(0.4)), lineWidth: 1)
+                var line = Path(); line.move(to: CGPoint(x: fx0, y: yy)); line.addLine(to: CGPoint(x: fx1, y: yy))
+                g.stroke(line, with: .color(Theme.changed), style: StrokeStyle(lineWidth: selected ? 2.6 : 1.8, lineCap: .round))
                 if selected {
                     for edge in [x0, x1] { g.fill(Path(roundedRect: CGRect(x: edge - 2.5, y: lanesTop + lanesH / 2 - 18, width: 5, height: 36), cornerRadius: 2.5), with: .color(Theme.changed)) }
                     let cx = min(max(x0, 0), W) + (min(x1, W) - min(max(x0, 0), W)) / 2
@@ -547,7 +571,9 @@ struct TimelineTrack: View {
             let cTop = lanesTop + lanesH
             g.fill(Path(CGRect(x: 0, y: cTop, width: W, height: Self.contentLane)), with: .color(Theme.panel))
             g.fill(Path(CGRect(x: 0, y: cTop, width: W, height: 1)), with: .color(Theme.line))
-            if contentReady {
+            if contentReady && speech.isEmpty && music.isEmpty {
+                g.draw(Text("No speech or music recognised in this cue").font(.system(size: 10.5)).foregroundColor(Theme.dim), at: CGPoint(x: 8, y: cTop + Self.contentLane / 2), anchor: .leading)
+            } else if contentReady {
                 for (row, list, label) in [(0, speech, "Speech"), (1, music, "Music")] {
                     let yy = cTop + 4 + CGFloat(row) * 11
                     for s in list {
