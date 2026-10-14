@@ -155,7 +155,7 @@ struct ExportReport: Codable {
             settings.cut = max(2, settings.cut)
             // 1.1.1: the standard is now −18 LUFS. A session still on the old −23 default moves to −18 / −1 dBTP once;
             // any other target the user chose is kept.
-            if (saved.settingsRevision ?? 1) < Self.settingsRevision, settings.target == -23 {
+            if (saved.settingsRevision ?? 1) < 2, settings.target == -23 {
                 settings.target = -18; if settings.peak == -2 { settings.peak = -1 }
             }
             // 2.0: levelling is lossless by default (one exact gain change). Sessions on the old automatic file type move once.
