@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 // The show: every cue with where it is, and the actions that work on the whole show.
 
 struct RootView: View {
     @EnvironmentObject var store: CueStore
+    @EnvironmentObject var pro: ProStore
     @State private var importing = false
     @State private var settingsOpen = false
     @State private var column = NavigationSplitViewVisibility.all
@@ -25,7 +27,7 @@ struct RootView: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.audio, .movie, .folder], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { store.add(urls) }
         }
-        .sheet(isPresented: $settingsOpen) { SettingsView().environmentObject(store) }
+        .sheet(isPresented: $settingsOpen) { SettingsView().environmentObject(store).environmentObject(pro) }
         .alert("CueLevel", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("OK") { store.error = nil }
         } message: { Text(store.error ?? "") }
@@ -39,6 +41,7 @@ struct CueListView: View {
     @Binding var importing: Bool
     @Binding var settingsOpen: Bool
     @State private var filter = CueFilter.all
+    @State private var exporting = false
 
     var shown: [MobileCue] {
         store.cues.filter { c in
@@ -80,6 +83,7 @@ struct CueListView: View {
             }
         }
         .background(Theme.base.ignoresSafeArea())
+        .sheet(isPresented: $exporting) { ExportPicker(urls: store.levelledURLs).ignoresSafeArea() }
         .navigationTitle("CueLevel")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -91,7 +95,11 @@ struct CueListView: View {
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if !store.levelledURLs.isEmpty {
-                    ShareLink(items: store.levelledURLs) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Share levelled cues")
+                    Menu {
+                        Button { exporting = true } label: { Label("Save to a folder…", systemImage: "folder") }
+                        ShareLink(items: store.levelledURLs) { Label("Share…", systemImage: "square.and.arrow.up") }
+                    } label: { Image(systemName: "square.and.arrow.up") }
+                    .accessibilityLabel("Levelled cues")
                 }
                 Button { importing = true } label: { Image(systemName: "plus") }.accessibilityLabel("Add cues")
             }
@@ -225,4 +233,13 @@ struct EmptyDetail: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.base.ignoresSafeArea())
     }
+}
+
+/// Copies the levelled files to a folder the person picks (on a Mac this is the usual Save panel's folder choice).
+struct ExportPicker: UIViewControllerRepresentable {
+    let urls: [URL]
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        UIDocumentPickerViewController(forExporting: urls, asCopy: true)
+    }
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
 }

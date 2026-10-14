@@ -83,7 +83,7 @@ struct CueEditorView: View {
     @ViewBuilder var editingColumn: some View {
         transport
         TimelineTrack(model: model, player: player)
-            .frame(height: sizeClass == .regular ? 300 : 230)
+            .frame(minHeight: sizeClass == .regular ? 300 : 230, maxHeight: sizeClass == .regular ? .infinity : 230)
         OverviewStrip(model: model, player: player).frame(height: 40)
         tools
         if let r = model.selected { SectionInspector(model: model, region: r) }
