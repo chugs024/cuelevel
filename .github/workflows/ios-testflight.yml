@@ -1,7 +1,7 @@
 name: iPhone and iPad TestFlight
 # Builds CueLevel for iPhone and iPad, signs it (Xcode creates the certificate and profile through the API key),
 # and uploads it to App Store Connect for TestFlight.
-# Needs repository secrets ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8 (an App Store Connect API key with Admin access),
+# Needs the repository secret ASC_KEY_P8 (the .p8 file of the App Store Connect API key below, Admin access),
 # and an app record in App Store Connect for the bundle ID com.cuelevel.app.
 on:
   workflow_dispatch:
@@ -10,6 +10,10 @@ on:
         description: "Version (for example 1.0.0)"
         required: true
         default: "1.0.0"
+env:
+  # Not secret: they identify the key. Only the .p8 file (ASC_KEY_P8) is a secret.
+  KEY_ID: BYLJRNNN9R
+  ISSUER: 143e20b1-9ebc-48d7-ac2c-7b52fe48ed2b
 jobs:
   upload:
     runs-on: macos-15
@@ -18,25 +22,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check secrets
         env:
-          HAS_ID: ${{ secrets.ASC_KEY_ID != '' }}
-          HAS_ISSUER: ${{ secrets.ASC_ISSUER_ID != '' }}
           HAS_KEY: ${{ secrets.ASC_KEY_P8 != '' }}
         run: |
-          [[ "$HAS_ID" == true && "$HAS_ISSUER" == true && "$HAS_KEY" == true ]] || { echo "::error::Add ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8 (see Docs/iPhone app.md)"; exit 1; }
+          [[ "$HAS_KEY" == true ]] || { echo "::error::Add the ASC_KEY_P8 secret (see Docs/iPhone app.md)"; exit 1; }
       - name: API key file
         env:
           KEY: ${{ secrets.ASC_KEY_P8 }}
-          KEY_ID: ${{ secrets.ASC_KEY_ID }}
         run: |
           mkdir -p "$RUNNER_TEMP/keys"
-          printf '%s\n' "$KEY" > "$RUNNER_TEMP/keys/AuthKey_$KEY_ID.p8"
+          # Normalise pasted text: Windows line endings and stray spaces around the lines.
+          printf '%s\n' "$KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' > "$RUNNER_TEMP/keys/AuthKey_$KEY_ID.p8"
+          head -1 "$RUNNER_TEMP/keys/AuthKey_$KEY_ID.p8" | grep -q "BEGIN PRIVATE KEY" || { echo "::error::ASC_KEY_P8 doesn't start with -----BEGIN PRIVATE KEY-----"; exit 1; }
           echo "KEY_PATH=$RUNNER_TEMP/keys/AuthKey_$KEY_ID.p8" >> "$GITHUB_ENV"
       - name: XcodeGen
         run: brew install xcodegen && cd Mobile && xcodegen generate
       - name: Archive
         env:
-          KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
           VERSION: ${{ inputs.version }}
         run: |
           set -o pipefail
@@ -46,10 +47,7 @@ jobs:
             -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" archive 2>&1 | tee archive.log | grep -E "error:|ARCHIVE|Signing" || true
           grep -q "ARCHIVE SUCCEEDED" archive.log || { grep -E "error:" archive.log | head -15 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
-      - name: Upload to App Store Connect
-        env:
-          KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+      - name: Export the app
         run: |
           set -o pipefail
           cat > build/ExportOptions.plist <<PLIST
@@ -57,16 +55,27 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>upload</string>
+            <key>destination</key><string>export</string>
             <key>teamID</key><string>327ABFB3W2</string>
             <key>signingStyle</key><string>automatic</string>
             <key>manageAppVersionAndBuildNumber</key><false/>
           </dict></plist>
           PLIST
           xcodebuild -exportArchive -archivePath build/CueLevel.xcarchive -exportOptionsPlist build/ExportOptions.plist -exportPath build/export \
-            -allowProvisioningUpdates -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" 2>&1 | tee export.log | grep -E "error:|EXPORT|Upload" || true
+            -allowProvisioningUpdates -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" 2>&1 | tee export.log | grep -E "error:|EXPORT" || true
           grep -q "EXPORT SUCCEEDED" export.log || { grep -E "error:|Error" export.log | head -15 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
+          ls -la build/export
+      - name: Upload to App Store Connect
+        run: |
+          # altool finds the key by ID in ~/private_keys.
+          mkdir -p ~/private_keys && cp "$KEY_PATH" ~/private_keys/
+          IPA=$(ls build/export/*.ipa | head -1)
+          xcrun altool --validate-app -f "$IPA" -t ios --apiKey "$KEY_ID" --apiIssuer "$ISSUER" 2>&1 | tee validate.log || true
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$KEY_ID" --apiIssuer "$ISSUER" 2>&1 | tee upload.log
+          if grep -qiE "error|failed" upload.log && ! grep -qi "UPLOAD SUCCEEDED\|No errors uploading" upload.log; then
+            grep -iE "error|failed" upload.log validate.log | head -15 | while IFS= read -r l; do echo "::error::$l"; done; exit 1
+          fi
           echo "::notice::Uploaded CueLevel ${{ inputs.version }} (build $((100 + GITHUB_RUN_NUMBER))). It appears in TestFlight after Apple's processing, usually 10–30 minutes."
       - name: Remove the key
         if: always()
-        run: rm -rf "$RUNNER_TEMP/keys"
+        run: rm -rf "$RUNNER_TEMP/keys" ~/private_keys
