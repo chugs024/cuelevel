@@ -286,6 +286,11 @@ struct Analysis: Codable, Sendable {
         if let peak = levels.samplePeak, peak >= clipLevel, let count = levels.peakCount, count >= 4 {
             notes.append("Probable clipping: \(Int(count)) samples sit at full scale. Levelling cannot remove existing distortion.")
         }
+        // 2.0.2: true peaks above 0 dBTP mean the recording was pushed past full scale before it was saved (common with
+        // camera and phone recordings of loud events). The sample check above can miss it in compressed audio.
+        if levels.truePeak > 0.05, !notes.contains(where: { $0.contains("clipping") }) {
+            notes.append("Possible clipping: peaks reach +\(f(levels.truePeak)) dBTP, over full scale, so the recording may already be distorted. Levelling turns it down but can't remove distortion.")
+        }
         if let dc = levels.dcOffset, abs(dc) >= 0.001 { notes.append("DC offset of \(String(format: "%.2f", dc * 100))% of full scale. It wastes headroom and can cause clicks at cue starts.") }
         if info.channels >= 2, let c = stereo?.correlation {
             if c < -0.1 { notes.append("Left and right are largely out of phase (correlation \(String(format: "%.2f", c))). Content can cancel on a mono-summed system.") }

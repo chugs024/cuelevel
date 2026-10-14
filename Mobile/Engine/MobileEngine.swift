@@ -91,6 +91,12 @@ enum MobileEngine {
     static func analyze(_ url: URL, isCancelled: @escaping () -> Bool = { false },
                         progress: @escaping (Double) -> Void = { _ in }) async throws -> (Analysis, EvenOutData) {
         let media = try await MediaReader.open(url)
+        return try analyzeOpened(media, isCancelled: isCancelled, progress: progress)
+    }
+    /// One decoding pass gives everything: loudness, true peak, range, waveform, silence, phase, the loudness curve,
+    /// and Even out's readings. Synchronous, so the Mac app can run it on its own worker thread.
+    static func analyzeOpened(_ media: OpenedMedia, isCancelled: @escaping () -> Bool = { false },
+                              progress: @escaping (Double) -> Void = { _ in }) throws -> (Analysis, EvenOutData) {
         let meter = LoudnessMeter(sampleRate: media.sampleRate)
         let wave = WaveformBuilder(duration: media.info.duration, sampleRate: media.sampleRate)
         let total = max(1, media.info.duration * media.sampleRate)
@@ -102,7 +108,7 @@ enum MobileEngine {
             if done - lastReport > Int(media.sampleRate) { lastReport = done; progress(min(1, Double(done) / total)) }
         }
         let levels = try meter.finish()
-        let analysis = Analysis(info: media.info, levels: levels, waveform: wave.peaks, sampleCount: wave.frame,
+        let analysis = Analysis(info: media.info, levels: levels, waveform: wave.peaks, sampleCount: nil,
                                 stereo: wave.stats, loudnessCurve: reducedCurve(meter.shortTerm))
         progress(1)
         return (analysis, EvenOutData(momentary: meter.momentary, peaks: wave.detail))

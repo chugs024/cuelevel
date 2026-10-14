@@ -13,7 +13,7 @@ FFMPEG="${FFMPEG:-Engine/ffmpeg}"
 NAME=CueLevel; (( DEV )) && NAME="CueLevel Dev"
 APP="$OUT/$NAME.app"
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-xcrun swiftc -O -parse-as-library -target arm64-apple-macosx13.0 Source/*.swift \
+xcrun swiftc -O -parse-as-library -target arm64-apple-macosx13.0 Source/*.swift Mobile/Engine/*.swift \
   -o "$APP/Contents/MacOS/CueLevel" -framework SwiftUI -framework AVKit -framework Cocoa -framework Speech
 cp Packaging/Info.plist "$APP/Contents/Info.plist"
 cp "$FFMPEG" "$APP/Contents/Resources/ffmpeg"

@@ -215,7 +215,7 @@ struct CheckPill: View {
 func checkPills(_ a: Analysis) -> [(String, Bool)] {
     var list: [(String, Bool)] = []
     let clip = a.info.channels == 1 ? -3.11 : -0.1
-    let clipping = (a.levels.samplePeak ?? -100) >= clip && (a.levels.peakCount ?? 0) >= 4
+    let clipping = ((a.levels.samplePeak ?? -100) >= clip && (a.levels.peakCount ?? 0) >= 4) || a.levels.truePeak > 0.05
     list.append(clipping ? ("Probable clipping", false) : ("No clipping", true))
     list.append(abs(a.levels.dcOffset ?? 0) >= 0.001 ? ("DC offset", false) : ("No DC offset", true))
     if a.info.channels >= 2, let c = a.stereo?.correlation {

@@ -290,10 +290,8 @@ struct ExportReport: Codable {
                     let modified = attributes?[.modificationDate] as? Date
                     if render, let existing = current.analysis, size == existing.info.byteCount, modified == existing.info.modified { analysis = existing }
                     else {
-                        analysis = try await offPool {
-                            try AudioEngine.analyze(current.source, token: cancellation) { value, message in
-                                Task { @MainActor in self.progress(id, render ? value * 0.3 : value, message) }
-                            }
+                        analysis = try await measureCue(current.source, token: cancellation) { value, message in
+                            Task { @MainActor in self.progress(id, render ? value * 0.3 : value, message) }
                         }
                     }
                     update(id) { $0.analysis = analysis }
@@ -306,7 +304,12 @@ struct ExportReport: Codable {
                         let source = current.source, info = analysis.info
                         let tolerance = references.evenOutTolerance(for: perCue.mode)
                         let skipMusic = current.mode == nil   // a cue the user marked Voice is always evened
-                        let plan = try await offPool { try AudioEngine.evenOutPlan(source, info: info, tolerance: tolerance, keeping: manual, skipMusic: skipMusic, token: cancellation) }
+                        let readings = evenOutCache[source]
+                        let plan = try await offPool { () -> (regions: [GainRegion], soundsLikeMusic: Bool) in
+                            // 2.0.2: the readings from measuring are reused, so Even out doesn't decode the file twice more.
+                            if let readings { return MobileEngine.evenOutPlan(readings, duration: info.duration, tolerance: tolerance, keeping: manual, skipMusic: skipMusic) }
+                            return try AudioEngine.evenOutPlan(source, info: info, tolerance: tolerance, keeping: manual, skipMusic: skipMusic, token: cancellation)
+                        }
                         let auto = plan.regions
                         update(id) { $0.clipGain = keep + auto; $0.evenOutSkipped = plan.soundsLikeMusic ? true : nil }
                         evened = auto.count
@@ -470,6 +473,27 @@ struct ExportReport: Codable {
     @Published var meterCurve: [Float] = []
     private var meterToken: Cancellation?
     private var meterCache: [URL: [Float]] = [:]
+    /// Even out's readings (momentary loudness and fine peaks) kept from measuring, per source file.
+    private var evenOutCache: [URL: EvenOutData] = [:]
+
+    /// 2.0.2: measures a cue in one pass with the built-in engine, which reads only the audio (a long camera video used
+    /// to be read from disk three times by FFmpeg, then twice more for Even out and once more for the meter). Files it
+    /// can't open (MKV, WebM and other formats outside AVFoundation) are measured by FFmpeg as before.
+    func measureCue(_ url: URL, token: Cancellation, progress: @escaping @Sendable (Double, String) -> Void) async throws -> Analysis {
+        progress(0, "Opening file")
+        if let media = try? await MediaReader.open(url) {
+            do {
+                let (analysis, readings) = try await offPool {
+                    try MobileEngine.analyzeOpened(media, isCancelled: { (try? token.check()) == nil }) { value in progress(value, "Measuring loudness, peaks and silence") }
+                }
+                evenOutCache[url] = readings
+                meterCache[url] = readings.momentary
+                return analysis
+            } catch is CancellationError { throw CancellationError() }
+            catch { if (try? token.check()) == nil { throw CancellationError() } }   // otherwise fall back to FFmpeg
+        }
+        return try await offPool { try AudioEngine.analyze(url, token: token, progress: progress) }
+    }
     @Published var showShortcuts = false
     var selectedEdit: CueEdit { selected?.edit ?? CueEdit() }
     private var detailFor: UUID?
