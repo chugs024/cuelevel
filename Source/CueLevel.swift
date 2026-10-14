@@ -299,7 +299,7 @@ struct ContentView: View {
                     .frame(width: 200).disabled(job.output == nil)
                     .help(job.output == nil ? "Level the cue to hear the result" : "Switch between the original and the levelled cue")
                 Spacer()
-                if !model.currentCurve.isEmpty {
+                if model.currentCurve.contains(where: { $0 > -69.9 }) {
                     HStack(spacing: 14) {
                         HStack(spacing: 6) { Capsule().fill(Theme.changed).frame(width: 14, height: 2); Text("Loudness over time") }
                         if model.goodBand(target: target) != nil {
@@ -768,7 +768,7 @@ struct Waveform: View {
                         context.stroke(line, with: .color(Theme.bone.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     }
                     // The first ~3 s have no short-term reading yet (shown as the -70 floor); start the line at the first real value.
-                    let first = curve.firstIndex { $0 > -69.9 } ?? 0
+                    let first = curve.firstIndex { $0 > -69.9 } ?? curve.count   // cues under 3 s have no short-term reading at all
                     var trace = Path()
                     for index in first..<curve.count {
                         let point = CGPoint(x: Double(index) / Double(curve.count - 1) * size.width, y: y(Double(curve[index])))

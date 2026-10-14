@@ -124,6 +124,7 @@ struct ExportReport: Codable {
     private var watchPending: [String: Int64] = [:]
     private var token: Cancellation?
     private var observation: Any?
+    private var endObserver: NSObjectProtocol?
     private var playerError: NSKeyValueObservation?
     let directory: URL
     var selected: CueJob? { jobs.first { $0.id == selection } }
@@ -203,6 +204,10 @@ struct ExportReport: Codable {
                 self.playhead = time.seconds.isFinite ? time.seconds : 0
                 self.playing = self.player.rate > 0
             }
+        }
+        // 2.0.1: the play button turns back to Play when a cue reaches its end.
+        endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.playing = false }
         }
         selection = jobs.first?.id
         loadPlayer()
@@ -353,7 +358,7 @@ struct ExportReport: Codable {
             workingID = nil; busy = false; token = nil
             let stopped = jobs.contains { $0.status == .cancelled }
             let thisRunStopped = (try? cancellation.check()) == nil
-            status = stopped ? "Stopped. Remaining files stay in the queue." : quick ? "Quick Level finished. Levelled files are in \(outputFolderDisplay)." : "Finished. Review your results before export."
+            status = stopped ? "Stopped. Remaining files stay in the queue." : quick ? "Quick Level finished. Levelled files are in \(outputFolderDisplay)." : (render ? "Finished. Review the results, then deliver." : "Measured. Select a cue to see what CueLevel would change, or Level all.")
             persist()
             if quick { writeShowReport(into: reportsFolder, dated: quickFolder == nil) }
             if quickLevel, !thisRunStopped {
@@ -399,7 +404,14 @@ struct ExportReport: Codable {
         let common = min(before.integrated, after.integrated)
         player.volume = Float(pow(10, (common - (processedPreview ? after.integrated : before.integrated)) / 20))
     }
-    func playPause() { if player.rate > 0 { player.pause() } else { player.play() }; playing = player.rate > 0 }
+    func playPause() {
+        if player.rate > 0 { player.pause() }
+        else {
+            if duration > 0, playhead >= duration - 0.05 { player.seek(to: .zero); playhead = 0 }   // play again from the top
+            player.play()
+        }
+        playing = player.rate > 0
+    }
     func seek(_ seconds: Double) { player.seek(to: CMTime(seconds: max(0, min(duration, seconds)), preferredTimescale: 600)); playhead = seconds }
     func chooseReference() {
         guard !busy else { return }

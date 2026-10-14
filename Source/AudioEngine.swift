@@ -660,21 +660,30 @@ enum AudioEngine {
         guard free > estimate else { throw cueError("Not enough free space for processing. Free up approximately \(ByteCountFormatter.string(fromByteCount: estimate, countStyle: .file)) on the Mac's internal drive.") }
         // Clip gain changes the cue's loudness and peaks, so measure the edited signal before planning the gain.
         let clipFilter = settings.editFilters(duration: info.duration, sampleRate: info.sampleRate ?? 48000, canCut: !info.isVideo)
-        let sourceLevels = try clipFilter.map { filter in
-            try measure(input, token: token, duration: info.duration, filters: filter) { progress($0 * 0.2, "Measuring clip gain edits") }
-        } ?? analysis.levels
+        // 2.0.1: clip gain is rendered once to a float intermediate, which is then measured and levelled. The per-sample
+        // gain expression is the slow part, and it used to run twice (measure, then render).
+        var clipped: URL? = nil
+        let sourceLevels: Measurement
+        if let filter = clipFilter {
+            let temp = directory.appendingPathComponent("clip-gain-\(UUID().uuidString).wav")
+            try run(["-i", input.path, "-map", "0:a:0", "-vn", "-af", "aformat=channel_layouts=stereo,\(filter)", "-c:a", "pcm_f32le", "-rf64", "auto", "-n", temp.path],
+                    token: token, duration: info.duration) { progress($0 * 0.15, "Applying clip gain") }
+            clipped = temp
+            sourceLevels = try measure(temp, token: token, duration: info.duration) { progress(0.15 + $0 * 0.05, "Measuring clip gain edits") }
+        } else { sourceLevels = analysis.levels }
+        defer { if let clipped { try? FileManager.default.removeItem(at: clipped) } }
         let plan = LosslessPlan(levels: sourceLevels, target: settings.target, ceiling: settings.peak, maxLimiting: settings.peakLimit ?? 0)
         guard plan.gain.isFinite, abs(plan.gain) < 60 else { throw cueError("The soundtrack is silent or too quiet to level reliably.") }
         let output = directory.appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_CueLevel." + ext)
         let sampleFormat = info.audioDescription.hasPrefix("pcm_f") ? "pcm_f32le" : "pcm_s24le"
-        var chain = "aformat=channel_layouts=stereo," + (clipFilter.map { $0 + "," } ?? "") + "volume=" + String(format: "%.4f", plan.gain) + "dB:precision=double"
+        var chain = (clipped == nil ? "aformat=channel_layouts=stereo," : "") + "volume=" + String(format: "%.4f", plan.gain) + "dB:precision=double"
         if plan.limiting > 0.05 {
             // Only when the user allowed limiting: 4x oversampled look-ahead limiter (approximates true peak), then back to the source rate.
             let limit = pow(10, (settings.peak - 0.3) / 20)
             chain += ",aresample=192000,alimiter=limit=" + String(format: "%.6f", limit) + ":attack=1:release=50:level=0:latency=1,aresample=\(info.sampleRate ?? 48000)"
         }
         let extraTracks = info.isVideo && (info.audioStreams ?? 1) > 1
-        var args = ["-i", input.path, "-filter_complex", "[0:a:0]\(chain)[levelled]"]
+        var args = ["-i", input.path] + (clipped.map { ["-i", $0.path] } ?? []) + ["-filter_complex", "[\(clipped == nil ? 0 : 1):a:0]\(chain)[levelled]"]
         if info.isVideo { args += ["-map", "0:v?"] }   // video first, as in typical source files
         args += ["-map", "[levelled]"]
         if extraTracks { args += ["-map", "0:a?", "-map", "-0:a:0"] }
@@ -693,8 +702,9 @@ enum AudioEngine {
             let wave = try waveform(output, duration: info.duration, token: token)
             func f(_ v: Double) -> String { String(format: "%.1f", v) }
             var warnings: [String] = []
-            let edits = ClipGain.active(settings.clipGain).count
-            if edits > 0 { warnings.append("Clip gain changed the volume of \(edits) section\(edits == 1 ? "" : "s") before levelling. Those sections are volume changes only; listen through the fades.") }
+            // Even out's own sections are listed in the result; only hand-drawn sections are a note to listen to.
+            let edits = ClipGain.active(settings.clipGain).filter { $0.isAuto != true }.count
+            if edits > 0 { warnings.append("Clip gain changed the volume of \(edits) section\(edits == 1 ? "" : "s") you drew before levelling. Listen through the fades.") }
             if plan.shortfall > 0.05 {
                 warnings.append("Kept \(f(plan.shortfall)) dB below the \(f(settings.target)) LUFS target so the loudest peak stays under \(f(settings.peak)) dBTP without limiting. Output: \(f(levels.integrated)) LUFS.")
             }

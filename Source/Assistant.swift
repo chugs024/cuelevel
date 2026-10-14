@@ -83,6 +83,13 @@ struct AssistantPanel: View {
         } else {
             Text("File type is set to \(model.settings.format.rawValue), so the processing chain in Show settings runs as well. That changes the sound; choose Lossless for gain only.").hint()
         }
+        if job.status == .working {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack { Text(job.message).font(.system(size: 12.5, weight: .medium)).lineLimit(1); Spacer(); Text("\(Int(job.progress * 100))%").monospacedDigit() }
+                    .font(.system(size: 12.5)).foregroundStyle(Theme.text)
+                ProgressView(value: job.progress).tint(Theme.good)
+            }.padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Theme.field))
+        }
         VStack(spacing: 8) {
             Button { lossless ? model.quickLevelSelected() : model.processSelected() } label: {
                 Text(job.output == nil ? (lossless ? "Level this cue" : "Process this cue") : "Level again")

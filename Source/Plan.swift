@@ -109,7 +109,7 @@ struct CuePlan: Equatable {
             let rule = "Turns any stretch more than \(String(format: "%g", tolerance)) dB louder or quieter than the rest back into line. The change happens in a pause, with no fade."
             guard let spread, let good = span?.spread else { return rule }
             return spread <= good.upperBound + 1
-                ? "This cue moves \(f(spread)) LU, like your good \(settings.mode.label) cues (\(f(good.lowerBound))–\(f(good.upperBound))), so there's probably nothing to change."
+                ? "This cue moves \(f(spread)) LU overall, like your good \(settings.mode.label) cues (\(f(good.lowerBound))–\(f(good.upperBound))). Only a stretch more than \(String(format: "%g", tolerance)) dB off the rest would change."
                 : "This cue moves \(f(spread)) LU; good \(settings.mode.label) moves \(f(good.lowerBound))–\(f(good.upperBound)). " + rule
         }()
         let isMusic = settings.mode == .music
