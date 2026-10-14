@@ -549,7 +549,6 @@ struct ContentView: View {
         }.padding(24).frame(width: 480).background(Theme.panel).preferredColorScheme(.dark)
     }
 }
-}
 
 // MARK: - Components
 
