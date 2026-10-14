@@ -155,10 +155,12 @@ enum MediaReader {
     }
 
     /// Decodes the whole first audio track, calling `body` with each chunk (one array per channel, presentation time).
-    static func decode(_ media: OpenedMedia, isCancelled: () -> Bool = { false },
+    /// `range` (2.1) reads only part of the file, e.g. the part of the waveform on screen.
+    static func decode(_ media: OpenedMedia, range: CMTimeRange? = nil, isCancelled: () -> Bool = { false },
                        body: ([[Float]], CMTime) throws -> Void) throws {
         let reader: AVAssetReader
         do { reader = try AVAssetReader(asset: media.asset) } catch { throw cueError("CueLevel can't read this file. It may be damaged, incomplete, or not audio or video.") }
+        if let range { reader.timeRange = range }
         let output = AVAssetReaderTrackOutput(track: media.audioTrack, outputSettings: decodeSettings(media))
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw cueError("CueLevel can't decode this file's audio.") }

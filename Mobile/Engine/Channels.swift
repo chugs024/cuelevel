@@ -30,6 +30,26 @@ struct ChannelMap: Sendable, Equatable {
         }
     }
 
+    /// Short names of the channels, for the editor's lanes ("L", "R", "C", "LFE", "Ls", "Rs").
+    var shortNames: [String] {
+        labels.enumerated().map { i, label in
+            switch label {
+            case kAudioChannelLabel_Mono: return "Mono"
+            case kAudioChannelLabel_Left: return "L"
+            case kAudioChannelLabel_Right: return "R"
+            case kAudioChannelLabel_Center: return "C"
+            case kAudioChannelLabel_LFEScreen, kAudioChannelLabel_LFE2: return "LFE"
+            case kAudioChannelLabel_LeftSurround, kAudioChannelLabel_RearSurroundLeft: return "Ls"
+            case kAudioChannelLabel_RightSurround, kAudioChannelLabel_RearSurroundRight: return "Rs"
+            case kAudioChannelLabel_LeftSurroundDirect: return "Lss"
+            case kAudioChannelLabel_RightSurroundDirect: return "Rss"
+            case kAudioChannelLabel_CenterSurround: return "Cs"
+            case kAudioChannelLabel_LeftCenter: return "Lc"
+            case kAudioChannelLabel_RightCenter: return "Rc"
+            default: return "\(i + 1)"
+            }
+        }
+    }
     /// Short name for the layout ("5.1", "7.1", "6 channels").
     var name: String {
         let lfe = labels.contains(kAudioChannelLabel_LFEScreen) || labels.contains(kAudioChannelLabel_LFE2)

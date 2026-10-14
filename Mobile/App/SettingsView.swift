@@ -87,6 +87,7 @@ struct SettingsView: View {
 
 @main
 struct CueLevelMobileApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = CueStore()
     @StateObject private var pro = ProStore()
     var body: some Scene {

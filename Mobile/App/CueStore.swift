@@ -231,6 +231,7 @@ final class CueStore: ObservableObject {
             let folder = originalURL(c).deletingLastPathComponent()
             if folder != Self.originals { try? FileManager.default.removeItem(at: folder) }
             try? FileManager.default.removeItem(at: Self.details.appendingPathComponent(c.id.uuidString + ".json"))
+            try? FileManager.default.removeItem(at: Self.details.appendingPathComponent(c.id.uuidString + "-content.json"))
         }
         cues.removeAll { ids.contains($0.id) }
         levelQueue.removeAll { ids.contains($0) }
@@ -391,6 +392,15 @@ final class CueStore: ObservableObject {
             update(id) { $0.state = .failed; $0.message = error.localizedDescription }
         }
         progress[id] = nil; progressLabel[id] = nil
+    }
+
+    // MARK: Speech and music lane (kept per cue)
+    func contentSegments(_ id: UUID) -> [ContentSegment]? {
+        guard let data = try? Data(contentsOf: Self.details.appendingPathComponent(id.uuidString + "-content.json")) else { return nil }
+        return try? JSONDecoder().decode([ContentSegment].self, from: data)
+    }
+    func saveContentSegments(_ id: UUID, _ segments: [ContentSegment]) {
+        if let data = try? JSONEncoder().encode(segments) { try? data.write(to: Self.details.appendingPathComponent(id.uuidString + "-content.json")) }
     }
 
     // MARK: Pro editor
