@@ -136,6 +136,17 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         }
         check(ourRegions.contains { $0.gain > 6 && $0.start > 11 && $0.end < 22 }, "the quiet stretch is lifted")
 
+        print("== Songs are recognised, soft intro and fade-out included (2.1)")
+        // A mastered song: a soft 4 s intro 12 dB under the song, the song itself without pauses, and a 6 s fade-out.
+        // Before 2.1 the intro and fade counted as pauses, the song was taken for speech and Even out lifted the intro.
+        try ffmpeg(["-f", "lavfi", "-i", "anoisesrc=color=pink:sample_rate=48000:duration=60:seed=3", "-af",
+                    "volume='if(lt(t,4),0.25,1)*if(gt(t,54),max(0,(60-t)/6),1)':eval=frame,volume=-6dB", "-ac", "2", "-c:a", "pcm_s24le", file("song.wav").path])
+        let (song, songData) = try await MobileEngine.analyze(file("song.wav"))
+        check(ClipGain.soundsLikeMusic(momentary: songData.momentary.map(Double.init)), "a song with a soft intro and a fade-out is recognised as music")
+        let songPlan = MobileEngine.evenOutPlan(songData, duration: song.info.duration, tolerance: ClipGain.evenOutTolerance, keeping: [], skipMusic: true)
+        check(songPlan.soundsLikeMusic && songPlan.regions.isEmpty, "Even out leaves the song alone (\(songPlan.regions.count) sections)")
+        check(!ClipGain.soundsLikeMusic(momentary: speechData.momentary.map(Double.init)), "speech with pauses is still treated as speech")
+
         print("== Speed: a long, high-bitrate video")
         // 8 minutes of 1080p at a high bitrate with a stereo soundtrack: FFmpeg's analysis reads the file three times,
         // the built-in engine reads only the audio, once.

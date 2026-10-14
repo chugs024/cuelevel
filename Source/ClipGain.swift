@@ -138,8 +138,10 @@ extension ClipGain {
         let audible = m.filter { $0 > -70 }
         guard audible.count >= 200 else { return false }
         let sorted = audible.sorted(), typical = sorted[sorted.count / 2]
-        // Ignore silence before the first and after the last sound.
-        guard let first = m.firstIndex(where: { $0 > typical - 20 }), let last = m.lastIndex(where: { $0 > typical - 20 }), last > first else { return false }
+        // 2.1: judge the body of the cue, from the moment it first reaches its typical level to the moment it last
+        // does. A song's soft intro and its fade-out are not pauses: counting them made a song with a 4 s quiet intro
+        // look like speech, and Even out then lifted the intro by 9 dB.
+        guard let first = m.firstIndex(where: { $0 >= typical - 6 }), let last = m.lastIndex(where: { $0 >= typical - 6 }), last > first else { return false }
         let span = m[first...last]
         let dips = span.filter { $0 < typical - 12 }.count
         return Double(dips) / Double(span.count) < 0.04
