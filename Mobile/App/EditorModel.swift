@@ -100,7 +100,7 @@ final class EditorModel: ObservableObject {
     // MARK: Zoom
     func zoom(by factor: Double, around t: Double) {
         let span = window.upperBound - window.lowerBound
-        let newSpan = min(duration, max(min(0.25, duration), span / factor))
+        let newSpan = min(duration, max(min(0.002, duration), span / factor))   // down to about 100 samples across the screen
         let frac = span > 0 ? (t - window.lowerBound) / span : 0.5
         var lo = t - newSpan * frac
         lo = max(0, min(duration - newSpan, lo))

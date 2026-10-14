@@ -408,13 +408,13 @@ struct TimelineTrack: View {
             func px(_ t: Double) -> CGFloat { CGFloat((t - window.lowerBound) / max(0.0001, span)) * W }
             // Ruler.
             g.fill(Path(CGRect(x: 0, y: 0, width: W, height: Self.ruler)), with: .color(Theme.panel))
-            let step = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600].first { Double(W) / (span / $0) >= 76 } ?? 600
+            let step = [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600].first { Double(W) / (span / $0) >= 76 } ?? 600
             var tick = (window.lowerBound / step).rounded(.up) * step
             while tick <= window.upperBound + 0.0001 {
                 let xx = px(tick)
                 g.fill(Path(CGRect(x: xx, y: Self.ruler - 6, width: 1, height: 6)), with: .color(Theme.line2))
                 g.fill(Path(CGRect(x: xx, y: lanesTop, width: 0.5, height: lanesH)), with: .color(Theme.line.opacity(0.55)))
-                let label = step < 0.1 ? String(format: "%.2f", tick) : (step < 1 ? clockTenths(tick) : clock(tick))
+                let label = step < 0.01 ? String(format: "%.4f", tick) : step < 0.1 ? String(format: "%.2f", tick) : (step < 1 ? clockTenths(tick) : clock(tick))
                 g.draw(Text(label).font(.system(size: 10).monospacedDigit()).foregroundColor(Theme.dim), at: CGPoint(x: xx + 3, y: 3), anchor: .topLeading)
                 tick += step
             }
