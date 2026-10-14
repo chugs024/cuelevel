@@ -898,7 +898,7 @@ struct ShortcutSheet: View {
         ("Clip gain editor", [("Drag across", "Mark a section"), ("Drag up / down", "Change a section's level"), ("↑ / ↓", "Nudge 0.5 dB"), ("⇧↑ / ⇧↓", "Nudge 3 dB"), ("M", "Mute the selected section"), ("Return", "Add a marker at the playhead")]),
         ("Cue edges", [("I", "Set in point at the playhead"), ("O", "Set out point at the playhead"), ("Drag IN / OUT", "Move the in or out point on the ruler")]),
         ("View", [("T / R", "Zoom in / out"), ("⌥-scroll or pinch", "Zoom around the pointer"), ("Scroll", "Move along the cue when zoomed")]),
-        ("Edit", [("⌘Z / ⇧⌘Z", "Undo / redo"), ("⌘O", "Add files"), ("⌘/", "This list")]),
+        ("Edit", [("⌘Z / ⇧⌘Z", "Undo / redo"), ("⌘O", "Add cues"), ("⌘,", "Show settings"), ("⌘/", "This list")]),
     ]
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
