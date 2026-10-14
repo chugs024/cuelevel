@@ -345,6 +345,7 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         check(moved.target == -18 && moved.peak == -1, "old -23 default moves to -18 / -1")
         check(try migrated(target: -16, revision: nil).target == -16, "a deliberate target is kept")
         check(try migrated(target: -23, revision: 2).target == -23, "a -23 chosen after the change is kept")
+        check(moved.format == .lossless && Workspace(dataDirectory: area.appendingPathComponent("fresh-app")).settings.format == .lossless, "2.0: lossless by default, old automatic sessions move once")
         print("PASS: -18 LUFS standard and one-time migration")
 
         // 24. Clip gain: region rules, envelope, filter, and a real render where one section is turned down 6 dB.
@@ -548,6 +549,30 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         var goodJob = CueJob(source: speechLike); goodJob.analysis = sectionsAnalysis; goodJob.output = copy; goodJob.alreadyGood = "fine"
         check(Workspace.showReportRows([goodJob])[1][14] == "No change needed", "report says no change needed")
         print("PASS: already-good cues")
+
+        // 32. 2.0: the assistant's plan and each cue's stage.
+        var planSettings = lossless; planSettings.setMode(.voice)
+        var planLevels = cue(-26, tp: -12, lra: 5, crest: 14); planLevels.dcOffset = 0.004
+        var planAnalysis = Analysis(info: sectionsAnalysis.info, levels: planLevels, waveform: [])
+        planAnalysis.stereo = StereoStats(correlation: 0.5, headSilence: 1.2, tailSilence: 0.1)
+        let cuePlan = CuePlan.make(analysis: planAnalysis, settings: planSettings, evenOut: true, autoTrim: true, edit: CueEdit(), handEdits: false, library: library)
+        check(cuePlan.steps.map(\.id) == ["dc", "trim", "even", "gain"], "plan steps: \(cuePlan.steps.map(\.id))")
+        check(near(cuePlan.gain, 8) && near(cuePlan.predictedLoudness, -18) && cuePlan.shortfall == 0, "plan gain +8")
+        check(cuePlan.steps[0].isOn == false && cuePlan.steps[1].value == "−1.1 s" && cuePlan.steps[3].value == "+8.0 dB", "plan values: \(cuePlan.steps.map { $0.value ?? "-" })")
+        check(cuePlan.looksGood == nil, "a quiet cue does not look good")
+        let noTrim = CuePlan.make(analysis: planAnalysis, settings: planSettings, evenOut: false, autoTrim: false, edit: CueEdit(), handEdits: false, library: library)
+        check(noTrim.steps[1].isOn == false && noTrim.steps[1].value == nil && noTrim.steps[2].isOn == false, "switches off")
+        let finePlan = CuePlan.make(analysis: goodAnalysis, settings: planSettings, evenOut: true, autoTrim: true, edit: CueEdit(), handEdits: false, library: library)
+        check(finePlan.looksGood != nil && finePlan.steps.last?.title.hasPrefix("Bring to") == true, "already good plan: \(finePlan.looksGood ?? "nil")")
+        check(levelTone(-18.6, target: -18) == .good && levelTone(-25, target: -18) == .quiet && levelTone(-14, target: -18) == .hot, "level tones")
+        var stageJob = CueJob(source: speechLike)
+        check(CueStage(stageJob) == .waiting, "waiting")
+        stageJob.status = .analyzed; check(CueStage(stageJob) == .measured && !CueStage(stageJob).isDone, "measured")
+        stageJob.status = .ready; check(CueStage(stageJob) == .levelled && CueStage(stageJob).isDone, "levelled")
+        stageJob.alreadyGood = "fine"; check(CueStage(stageJob) == .alreadyGood && CueStage(stageJob).title == "Already good", "already good stage")
+        stageJob.status = .review; check(CueStage(stageJob).wantsAttention, "needs a look")
+        check(ContentMode.mixed.label == "Music + voice" && ContentMode.music.label == "Music", "labels")
+        print("PASS: assistant plan and stages")
         print("ALL 1.1 TESTS PASSED")
     }
 }

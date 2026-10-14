@@ -3,207 +3,30 @@ import SwiftUI
 import AVKit
 import UniformTypeIdentifiers
 
-// MARK: - Design system
-// Colours come from the CueLevel icon: a graphite tile, bone-white marks and the teal → lime → amber meter arc.
-// The meter gradient is used functionally (as a loudness scale), never as decoration.
-extension Color {
-    init(hex: UInt32, opacity: Double = 1) {
-        self.init(.sRGB, red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255, opacity: opacity)
-    }
-}
-enum Theme {
-    static let base = Color(hex: 0x14181E)
-    static let panel = Color(hex: 0x1A1F27)
-    static let raised = Color(hex: 0x232A34)
-    static let field = Color(hex: 0x12161B)
-    static let line = Color(hex: 0x2B333E)
-    static let line2 = Color(hex: 0x39424F)
-    static let bone = Color(hex: 0xF3EFE7)
-    static let text = Color(hex: 0xC7CCD4)
-    static let muted = Color(hex: 0x8B94A3)
-    static let dim = Color(hex: 0x5E6774)
-    static let teal = Color(hex: 0x3FE0B5)
-    static let lime = Color(hex: 0xC9E86A)
-    static let amber = Color(hex: 0xFF9F43)
-    static let coral = Color(hex: 0xFF6A3D)
-    static let meterStops: [Gradient.Stop] = [.init(color: Color(hex: 0x2BB894), location: 0), .init(color: teal, location: 0.35),
-                                              .init(color: lime, location: 0.68), .init(color: amber, location: 0.88), .init(color: coral, location: 1)]
-    static let meter = LinearGradient(stops: meterStops, startPoint: .leading, endPoint: .trailing)
-    /// Loudness scale used by every ribbon: −40 to 0 LUFS.
-    static func position(_ lufs: Double) -> Double { min(1, max(0, (lufs + 40) / 40)) }
-}
-private let accent = Theme.teal
-private let panelColor = Theme.panel
+// MARK: - CueLevel 2.0 window
+// Three columns, one job each: the show's cues (left), the cue itself (centre), and what CueLevel will do to it (right).
+// Prepare is for operators; Edit opens the clip gain editor. Settings that are set once per show live in Show settings.
 
-struct CLButton: ButtonStyle {
-    enum Kind { case primary, secondary, ghost, danger }
-    var kind = Kind.secondary
-    @Environment(\.isEnabled) private var enabled
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12.5, weight: kind == .primary ? .semibold : .medium))
-            .foregroundStyle(kind == .primary ? Theme.base : kind == .danger ? Theme.coral : Theme.bone)
-            .padding(.horizontal, 11).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 7).fill(kind == .primary ? Theme.bone : kind == .ghost ? Color.clear : Theme.raised))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(kind == .secondary || kind == .danger ? Theme.line2 : Color.clear, lineWidth: 1))
-            .opacity(enabled ? (configuration.isPressed ? 0.75 : 1) : 0.38)
-            .contentShape(Rectangle())
-    }
-}
-struct CLSwitch: ToggleStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Button { configuration.isOn.toggle() } label: {
-            HStack(spacing: 8) {
-                configuration.label
-                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-                    Capsule().fill(configuration.isOn ? Theme.teal : Theme.line2).frame(width: 30, height: 18)
-                    Circle().fill(configuration.isOn ? Color(hex: 0x0F1A17) : Color(hex: 0xAAB2BF)).frame(width: 14, height: 14).padding(2)
-                }.animation(.easeOut(duration: 0.15), value: configuration.isOn)
-            }
-        }.buttonStyle(.plain).accessibilityValue(configuration.isOn ? "On" : "Off")
-    }
-}
-/// A segmented control in the app's own style.
-struct Segments<Value: Hashable>: View {
-    let options: [(Value, String)]
-    @Binding var selection: Value
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(options.indices, id: \.self) { index in
-                let option = options[index]
-                Button { selection = option.0 } label: {
-                    Text(option.1).font(.system(size: 12, weight: .medium)).frame(maxWidth: .infinity).padding(.vertical, 5)
-                        .foregroundStyle(selection == option.0 ? Theme.bone : Theme.muted)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(selection == option.0 ? Color(hex: 0x2C3440) : Color.clear))
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityAddTraits(selection == option.0 ? .isSelected : [])
-            }
-        }.padding(2).background(RoundedRectangle(cornerRadius: 8).fill(Theme.field)).overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
-    }
-}
-extension View {
-    func card() -> some View { padding(.horizontal, 20).padding(.vertical, 16).background(RoundedRectangle(cornerRadius: 12).fill(Theme.panel)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line)) }
-    func sectionTitle() -> some View { font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.bone) }
-    func hint() -> some View { font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true) }
-}
-func lufs(_ value: Double?) -> String { value.map { String(format: "%.1f", $0).replacingOccurrences(of: "-", with: "−") } ?? "—" }
-func signed(_ value: Double) -> String { (value >= 0 ? "+" : "−") + String(format: "%.1f", abs(value)) }
-
-// MARK: - Loudness ribbon (the signature element)
-/// Where a cue started, where it landed and the target, on the icon's meter scale.
-struct LoudnessRibbon: View {
-    let source: Double
-    let output: Double?
-    let target: Double
-    var compact = false
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            let lo = Theme.position(min(source, output ?? source)) * w
-            let hi = Theme.position(max(source, output ?? source)) * w
-            let height: CGFloat = compact ? 6 : 14
-            let trackY: CGFloat = compact ? 0 : 30
-            ZStack(alignment: .topLeading) {
-                Capsule().fill(Theme.meter).opacity(compact ? 0 : 0.22).frame(width: w, height: height).offset(y: trackY)
-                Capsule().fill(compact ? AnyShapeStyle(Color(hex: 0x2A313C)) : AnyShapeStyle(Color.clear)).frame(width: w, height: height).offset(y: trackY)
-                Theme.meter.frame(width: w, height: height).mask(Capsule().frame(width: max(height, hi - lo), height: height).offset(x: lo).frame(width: w, alignment: .leading)).offset(y: trackY)
-                Rectangle().fill(Theme.bone.opacity(compact ? 0.55 : 1)).frame(width: compact ? 1.5 : 2, height: compact ? 12 : 38).offset(x: Theme.position(target) * w - 1, y: compact ? -3 : 18)
-                if !compact {
-                    Text("Target \(lufs(target))").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.bone).fixedSize()
-                        .position(x: Theme.position(target) * w, y: 8)
-                    marker(at: Theme.position(source) * w, filled: false, label: "Source \(lufs(source))")
-                    if let output { marker(at: Theme.position(output) * w, filled: true, label: "Levelled \(lufs(output))") }
-                }
-            }
-        }.frame(height: compact ? 6 : 74)
-        .accessibilityElement().accessibilityLabel("Loudness: source \(lufs(source)) LUFS, levelled \(lufs(output)) LUFS, target \(lufs(target)) LUFS")
-    }
-    func marker(at x: CGFloat, filled: Bool, label: String) -> some View {
-        ZStack {
-            if filled { Circle().fill(Theme.bone).frame(width: 26, height: 26).shadow(color: Theme.bone.opacity(0.18), radius: 0, x: 0, y: 0).overlay(Circle().stroke(Theme.bone.opacity(0.14), lineWidth: 8)) }
-            else { Circle().fill(Theme.base).frame(width: 26, height: 26).overlay(Circle().stroke(Color(hex: 0xAAB2BF), lineWidth: 2.5)) }
-            Text(label).font(.system(size: 11.5, weight: filled ? .medium : .regular)).foregroundStyle(filled ? Theme.bone : Theme.muted).fixedSize().offset(y: 30)
-        }.position(x: x, y: 37)
-    }
-}
-
-// MARK: - Waveform with loudness-over-time
-struct Waveform: View {
-    let peaks: [Float]
-    var curve: [Float] = []
-    var target: Double? = nil
-    /// Where good references of this content sit (short-term LUFS), drawn as a band behind the loudness line.
-    var good: ClosedRange<Double>? = nil
-    let position: Double
-    let duration: Double
-    let seek: (Double) -> Void
-    var body: some View {
-        GeometryReader { geometry in
-            Canvas { context, size in
-                var grid = Path()
-                for row in 1...3 { let y = size.height * Double(row) / 4; grid.move(to: CGPoint(x: 0, y: y)); grid.addLine(to: CGPoint(x: size.width, y: y)) }
-                context.stroke(grid, with: .color(.white.opacity(0.05)), lineWidth: 1)
-                let middle = size.height / 2
-                if !peaks.isEmpty {
-                    var wave = Path()
-                    let step = size.width / Double(peaks.count)
-                    for (index, peak) in peaks.enumerated() {
-                        let height = max(1, min(1, pow(Double(peak), 0.6)) * (middle - 6))
-                        wave.addRoundedRect(in: CGRect(x: Double(index) * step, y: middle - height, width: max(1, step * 0.62), height: height * 2), cornerSize: CGSize(width: 0.8, height: 0.8))
-                    }
-                    context.fill(wave, with: .linearGradient(Gradient(colors: [Theme.teal.opacity(0.9), Theme.teal.opacity(0.5), Theme.teal.opacity(0.9)]), startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height)))
-                }
-                func y(_ value: Double) -> Double { size.height * (1 - (max(-60, min(0, value)) + 60) / 60) }
-                if let good, curve.count > 1 {
-                    let band = CGRect(x: 0, y: y(good.upperBound), width: size.width, height: max(2, y(good.lowerBound) - y(good.upperBound)))
-                    context.fill(Path(band), with: .color(Theme.lime.opacity(0.10)))
-                    var edges = Path()
-                    edges.move(to: CGPoint(x: 0, y: band.minY)); edges.addLine(to: CGPoint(x: size.width, y: band.minY))
-                    edges.move(to: CGPoint(x: 0, y: band.maxY)); edges.addLine(to: CGPoint(x: size.width, y: band.maxY))
-                    context.stroke(edges, with: .color(Theme.lime.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [2, 4]))
-                }
-                if curve.count > 1 {
-                    if let target {
-                        var line = Path(); line.move(to: CGPoint(x: 0, y: y(target))); line.addLine(to: CGPoint(x: size.width, y: y(target)))
-                        context.stroke(line, with: .color(Theme.bone.opacity(0.5)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    }
-                    // The first ~3 s have no short-term reading yet (shown as the -70 floor); start the line at the first real value.
-                    let first = curve.firstIndex { $0 > -69.9 } ?? 0
-                    var trace = Path()
-                    for index in first..<curve.count {
-                        let point = CGPoint(x: Double(index) / Double(curve.count - 1) * size.width, y: y(Double(curve[index])))
-                        if index == first { trace.move(to: point) } else { trace.addLine(to: point) }
-                    }
-                    context.stroke(trace, with: .color(Theme.amber), style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
-                }
-                let x = duration > 0 ? min(1, max(0, position / duration)) * size.width : 0
-                var cursor = Path(); cursor.move(to: CGPoint(x: x, y: 0)); cursor.addLine(to: CGPoint(x: x, y: size.height))
-                context.stroke(cursor, with: .color(Theme.bone), lineWidth: 1)
-            }
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { value in if duration > 0 { seek(min(1, max(0, value.location.x / geometry.size.width)) * duration) } })
-            .overlay { if peaks.isEmpty { Text("Measure the cue to draw its waveform").hint() } }
-        }.frame(height: 150)
-        .accessibilityLabel("Waveform with short-term loudness. Use the playback position slider to seek.")
-    }
-}
-
-// MARK: - Window
 struct ContentView: View {
     @EnvironmentObject var model: Workspace
     @EnvironmentObject var updater: Updater
     @State private var hovering = false
-    @State private var showProcessing = false
-    @State private var showAdvanced = false
+    @State private var showSettings = false
+    @State private var filter = ListFilter.all
+    @AppStorage("CueLevelShowDetails") private var showDetails = false
+    enum ListFilter: Hashable { case all, attention, done }
+
     var body: some View {
         VStack(spacing: 0) {
-            topBar
+            toolbar
             HStack(spacing: 0) {
-                queue.frame(width: 320)
+                cueList.frame(width: 292)
                 Rectangle().fill(Theme.line).frame(width: 1)
-                center.frame(minWidth: 560, maxWidth: .infinity)
-                Rectangle().fill(Theme.line).frame(width: 1)
-                inspector.frame(width: 316)
+                stage.frame(minWidth: 560, maxWidth: .infinity)
+                if !model.clipEditing || model.selected == nil {
+                    Rectangle().fill(Theme.line).frame(width: 1)
+                    AssistantPanel(openSettings: { showSettings = true }, setEditing: setEditing).frame(width: 348)
+                }
             }
             statusBar
         }
@@ -213,7 +36,7 @@ struct ContentView: View {
         .background(WindowChrome())
         .onAppear { DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) } }
         .foregroundStyle(Theme.bone)
-        .tint(Theme.teal)
+        .tint(Theme.good)
         .preferredColorScheme(.dark)
         .onDrop(of: [UTType.fileURL], isTargeted: $hovering) { providers in
             for provider in providers { _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in model.add([url]) } } } }
@@ -221,174 +44,156 @@ struct ContentView: View {
         }
         .overlay { if hovering { dropOverlay } }
         .alert("CueLevel", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("OK") { model.error = nil } } message: { Text(model.error ?? "") }
+        .sheet(isPresented: $showSettings) { ShowSettingsSheet { showSettings = false }.environmentObject(model) }
         .sheet(isPresented: $model.showSavePreset) { presetSheet }
         .sheet(isPresented: $model.showAbout) { aboutSheet }
         .sheet(isPresented: $updater.showSheet) { updateSheet }
         .sheet(isPresented: $model.showShortcuts) { ShortcutSheet { model.showShortcuts = false } }
         .sheet(isPresented: Binding(get: { model.referenceDraft != nil }, set: { if !$0 { model.referenceDraft = nil } })) { referenceSheet }
+        .background { Button("") { setEditing(!model.clipEditing) }.keyboardShortcut("e").opacity(0).disabled(model.selected?.analysis == nil || model.busy) }
     }
+
+    /// Prepare ↔ Edit. Leaving Edit levels the cue again when the edits changed what it would sound like.
+    func setEditing(_ on: Bool) {
+        guard on != model.clipEditing else { return }
+        if on {
+            guard model.selected?.analysis != nil else { return }
+            model.clipEditing = true; model.switchPreview(false)
+        } else {
+            model.clipEditing = false; model.selectedRegion = nil
+            if let job = model.selected, model.outputIsStale || (job.output == nil && !ClipGain.active(job.clipGain).isEmpty) {
+                model.settings.format == .lossless ? model.quickLevelSelected() : model.processSelected()
+            }
+        }
+    }
+
     var dropOverlay: some View {
         ZStack {
-            Theme.base.opacity(0.82)
-            RoundedRectangle(cornerRadius: 16).strokeBorder(Theme.teal, style: StrokeStyle(lineWidth: 2, dash: [8, 6])).padding(18)
-            VStack(spacing: 10) {
-                LogoMark().frame(width: 64, height: 64)
-                Text(model.quickLevel ? "Drop to level" : "Drop to add to the queue").font(.system(size: 22, weight: .semibold))
-                Text(model.quickLevel ? "Levelled copies go to \(model.outputFolderDisplay)" : "Each file is measured as soon as it arrives").hint()
+            Theme.base.opacity(0.86)
+            RoundedRectangle(cornerRadius: 18).strokeBorder(Theme.good, style: StrokeStyle(lineWidth: 2, dash: [8, 6])).padding(18)
+            VStack(spacing: 12) {
+                LogoMark(tile: true).frame(width: 84, height: 84)
+                Text(model.quickLevel ? "Drop to level" : "Drop to add cues").font(.system(size: 24, weight: .semibold))
+                Text(model.quickLevel ? "Levelled copies go to \(model.outputFolderDisplay)" : "Each file is measured as it arrives. Originals are never changed.").hint()
             }
         }.allowsHitTesting(false)
     }
 
-    // MARK: Top bar
-    var topBar: some View {
-        HStack(spacing: 10) {
-            leadingBar
-            Spacer(minLength: 12)
-            trailingBar
-        }
-        .padding(.leading, 86).padding(.trailing, 16).frame(height: 52)
-        .background(Theme.panel).overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
-    }
-    var leadingBar: some View {
+    // MARK: Toolbar
+    var toolbar: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 9) { LogoMark().frame(width: 22, height: 22); Text("CueLevel").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.bone) }
-                .onTapGesture(count: 2) { model.showAbout = true }
-            quickLevelPill.padding(.leading, 14)
+            HStack(spacing: 8) { LogoMark().frame(width: 22, height: 22); Text("CueLevel").font(.system(size: 14.5, weight: .semibold)) }
+                .onTapGesture(count: 2) { model.showAbout = true }.help("About CueLevel")
+            Segments(options: [(false, "Prepare"), (true, "Edit")], selection: Binding(get: { model.clipEditing }, set: { setEditing($0) }))
+                .frame(width: 168).disabled(model.selected?.analysis == nil || model.busy)
+                .help("Prepare levels cues. Edit opens the clip gain editor for the selected cue (⌘E).")
+                .padding(.leading, 14)
             if let feed = updater.offered, updater.available != nil || updater.isWorking {
                 Button { updater.showSheet = true } label: {
                     Label("CueLevel \(feed.version) is ready", systemImage: "arrow.down.circle.fill").font(.system(size: 12, weight: .semibold))
                         .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Capsule().fill(Theme.teal.opacity(0.14))).overlay(Capsule().stroke(Theme.teal.opacity(0.35)))
-                        .foregroundStyle(Theme.teal)
+                        .background(Capsule().fill(Theme.good.opacity(0.14))).foregroundStyle(Theme.good)
                 }.buttonStyle(.plain).help("See what's new and install the update")
             }
-        }
-    }
-    var trailingBar: some View {
-        HStack(spacing: 10) {
-            Button { model.addFiles() } label: { Label("Add files", systemImage: "plus") }.buttonStyle(CLButton(kind: .ghost)).keyboardShortcut("o")
-            Button { model.exportShowReport() } label: { Label("Show report", systemImage: "doc.text") }.buttonStyle(CLButton(kind: .ghost))
-                .disabled(model.busy || model.jobs.allSatisfy { $0.analysis == nil })
-            Button("Export all…") { model.exportAll() }.buttonStyle(CLButton()).disabled(model.busy || model.completedCount == 0)
+            Spacer(minLength: 12)
+            Toggle(isOn: Binding(get: { model.quickLevel }, set: { model.setQuickLevel($0) })) {
+                Text("Level on drop").font(.system(size: 12.5)).foregroundStyle(model.quickLevel ? Theme.bone : Theme.muted)
+            }.toggleStyle(CLSwitch()).disabled(model.busy)
+                .help("When on, every file you drop is levelled straight into \(model.outputFolderDisplay)")
+            Button { model.addFiles() } label: { Label("Add cues", systemImage: "plus") }.buttonStyle(CLButton(kind: .ghost))
             if model.busy && model.canCancel {
                 Button { model.cancel() } label: { Label("Stop", systemImage: "stop.fill") }.buttonStyle(CLButton(kind: .danger)).keyboardShortcut(".")
             } else {
-                Button { model.processQueue() } label: { Label(model.quickLevel ? "Level queue" : "Process queue", systemImage: "play.fill") }
-                    .buttonStyle(CLButton(kind: .primary)).disabled(model.busy || model.remainingCount == 0)
+                let todo = model.jobs.filter { !CueStage($0).isDone }.count
+                Button(todo == 0 ? "All levelled" : "Level all \(todo)") { model.quickLevelAll() }.buttonStyle(CLButton())
+                    .disabled(model.busy || todo == 0)
             }
+            Menu {
+                Button("Open the Levelled folder") { model.revealOutputFolder() }
+                Button("Save a copy of every levelled cue…") { model.exportAll() }.disabled(model.completedCount == 0)
+                Button("Save show report…") { model.exportShowReport() }.disabled(model.jobs.allSatisfy { $0.analysis == nil })
+            } label: { Text("Deliver") }.menuStyle(.borderlessButton).fixedSize().disabled(model.busy)
+                .padding(.horizontal, 10).padding(.vertical, 5).background(RoundedRectangle(cornerRadius: 7).fill(Theme.raised)).overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.line2))
         }
+        .padding(.leading, 86).padding(.trailing, 16).frame(height: 52)
+        .background(Theme.panel).overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
-    /// Top of the right panel: one obvious button to Quick Level the selected cue and see the result.
-    @ViewBuilder func thisCueSection(_ job: CueJob) -> some View {
-        section {
-            HStack { Text("This cue").sectionTitle(); Spacer(); if model.workingID == job.id { ProgressView().controlSize(.small) } }
-            Text(job.source.lastPathComponent).font(.system(size: 12)).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.middle)
-            Button { model.quickLevelSelected() } label: {
-                Label(job.output == nil ? "Quick Level this cue" : "Quick Level again", systemImage: "bolt.fill")
-                    .font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity)
-            }.buttonStyle(CLButton(kind: .primary)).disabled(model.busy)
-            Text("To \(lufs(model.settings.target)) LUFS with one gain change\(model.evenOut ? ", evening out loud and quiet stretches first" : "")\(model.autoTrim ? ", silence trimmed" : ""). Your original is never changed.").hint()
-            HStack(spacing: 4) {
-                Image(systemName: "folder").foregroundStyle(Theme.muted)
-                Text("\(model.outputFolderDisplay) › \(Workspace.levelledName(for: job.source, target: model.settings.target, ext: job.analysis?.info.isVideo == true ? "mov" : "wav"))")
-                    .lineLimit(1).truncationMode(.middle).foregroundStyle(Theme.muted)
-                Spacer(minLength: 2)
-                Button("Open") { model.revealOutputFolder() }.buttonStyle(.plain).foregroundStyle(Theme.teal)
-            }.font(.system(size: 11)).help("Levelled copies are saved here with this name. Nothing is ever overwritten.")
-            if let reason = job.alreadyGood, job.output != nil {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("Already good, no change needed", systemImage: "checkmark.seal.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.lime)
-                    Text(reason).hint()
-                    Text("An exact copy of the original was saved, so the folder has every cue.").hint()
-                }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 8).fill(Theme.lime.opacity(0.08)))
-            }
-            if let output = job.output, let analysis = job.analysis, job.alreadyGood == nil {
-                let evened = (job.clipGain ?? []).filter { $0.isAuto == true }.count
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(lufs(analysis.levels.integrated)).foregroundStyle(Theme.muted)
-                        Image(systemName: "arrow.right").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.muted)
-                        Text(lufs(output.levels.integrated)).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.teal)
-                        Text("LUFS").foregroundStyle(Theme.muted)
-                    }.monospacedDigit()
-                    if evened > 0 { Text("Evened out \(evened) stretch\(evened == 1 ? "" : "es") · see Clip gain").hint() }
-                    if let gain = output.gainApplied { Text("Gain \(signed(gain)) dB · peak \(lufs(output.levels.truePeak)) dBTP").hint() }
-                    HStack(spacing: 8) {
-                        Button { model.switchPreview(true); model.playPause() } label: { Label("Listen", systemImage: "play.fill") }.buttonStyle(CLButton(kind: .ghost))
-                        Button("Export…") { model.exportSelected() }.buttonStyle(CLButton()).disabled(model.busy)
-                        if job.exportURL != nil { Button("Show in Finder") { model.reveal() }.buttonStyle(CLButton(kind: .ghost)) }
-                    }
-                }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 8).fill(Theme.field))
-            }
-            if model.jobs.count > 1 {
-                Button("Quick Level all \(model.jobs.count) cues") { model.quickLevelAll() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)
-            }
-        }
-    }
-    var quickLevelPill: some View {
-        HStack(spacing: 10) {
-            Toggle(isOn: Binding(get: { model.quickLevel }, set: { model.setQuickLevel($0) })) { EmptyView() }.toggleStyle(CLSwitch()).disabled(model.busy)
-            Text("Level on drop").font(.system(size: 13, weight: .semibold)).help("When on, every file you drop is Quick Levelled straight into the chosen folder")
-            Button { model.chooseQuickFolder() } label: {
-                (Text("saving to ").foregroundColor(Theme.muted) + Text(model.outputFolderDisplay).foregroundColor(Theme.bone.opacity(0.88))).font(.system(size: 12.5))
-            }.buttonStyle(.plain).help("Levelled copies go to \(model.outputFolder.path). Click to choose another folder.")
-        }
-        .padding(.leading, 6).padding(.trailing, 12).padding(.vertical, 5)
-        .background(Capsule().fill(model.quickLevel ? Theme.teal.opacity(0.10) : Theme.raised))
-        .overlay(Capsule().stroke(model.quickLevel ? Theme.teal.opacity(0.3) : Theme.line2))
-    }
+
     var statusBar: some View {
         HStack(spacing: 10) {
-            Circle().fill(model.busy ? Theme.amber : Theme.teal).frame(width: 7, height: 7)
+            Circle().fill(model.busy ? Theme.changed : Theme.good).frame(width: 7, height: 7)
             Text(model.status).lineLimit(1).foregroundStyle(Theme.text)
             if model.watching, let folder = model.watchFolder { Label("Watching \(folder.lastPathComponent)", systemImage: "eye").foregroundStyle(Theme.muted) }
             Spacer()
-            Text("Processing stays on this Mac").foregroundStyle(Theme.muted)
+            Text("Space plays · ⌘L levels · ⌘/ shortcuts").foregroundStyle(Theme.dim)
+            Text("Processing stays on this Mac").foregroundStyle(Theme.muted).padding(.leading, 10)
         }.font(.system(size: 11.5)).padding(.horizontal, 16).frame(height: 28)
         .background(Theme.panel).overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
 
-    // MARK: Queue
-    var queue: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
+    // MARK: Cue list
+    var visibleJobs: [CueJob] {
+        model.jobs.filter { job in
+            switch filter {
+            case .all: return true
+            case .attention: return CueStage(job).wantsAttention
+            case .done: return CueStage(job).isDone
+            }
+        }
+    }
+    var cueList: some View {
+        let attention = model.jobs.filter { CueStage($0).wantsAttention }.count
+        let done = model.jobs.filter { CueStage($0).isDone }.count
+        return VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Cues").sectionTitle()
+                Text(model.jobs.isEmpty ? "None yet" : "\(model.jobs.count) cue\(model.jobs.count == 1 ? "" : "s"), \(done) done").font(.system(size: 12)).foregroundStyle(Theme.muted).monospacedDigit()
                 Spacer()
-                Text(model.jobs.isEmpty ? "Empty" : "\(model.completedCount) of \(model.jobs.count) done").font(.system(size: 12)).foregroundStyle(Theme.muted).monospacedDigit()
-                Button { model.removeSelected() } label: { Image(systemName: "minus") }.buttonStyle(CLButton(kind: .ghost)).help("Remove the selected cue from the list (the file stays where it is)")
-                    .disabled(model.busy || model.selection == nil)
-            }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 8)
+                Button { model.removeSelected() } label: { Image(systemName: "minus") }.buttonStyle(CLButton(kind: .ghost))
+                    .help("Remove the selected cue from the list (the file stays where it is)").disabled(model.busy || model.selection == nil)
+            }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 10)
+            if !model.jobs.isEmpty {
+                HStack(spacing: 6) {
+                    Chip(title: "All", selected: filter == .all) { filter = .all }
+                    Chip(title: "Needs a look \(attention)", selected: filter == .attention) { filter = .attention }
+                    Chip(title: "Done \(done)", selected: filter == .done) { filter = .done }
+                    Spacer()
+                }.padding(.horizontal, 16).padding(.bottom, 8)
+            }
             ScrollView {
-                LazyVStack(spacing: 0) { ForEach(model.jobs) { job in queueRow(job) } }
+                LazyVStack(spacing: 0) { ForEach(visibleJobs) { job in cueRow(job, number: (model.jobs.firstIndex { $0.id == job.id } ?? 0) + 1) } }
             }
             dropHint.padding(14)
         }.background(Theme.panel)
         .onDeleteCommand { model.removeSelected() }
     }
-    func queueRow(_ job: CueJob) -> some View {
+    func cueRow(_ job: CueJob, number: Int) -> some View {
         let selected = model.selection == job.id
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: job.analysis?.info.isVideo == true ? "film" : "waveform").font(.system(size: 11)).foregroundStyle(Theme.dim).frame(width: 16)
-                Text(job.source.lastPathComponent).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 6)
-                StateBadge(job: job, target: job.output?.settings.target ?? model.settings.target)
-            }
-            if let analysis = job.analysis {
-                HStack(spacing: 10) {
-                    LoudnessRibbon(source: analysis.levels.integrated, output: job.output?.levels.integrated, target: job.output?.settings.target ?? model.settings.target, compact: true)
-                    (Text(lufs(analysis.levels.integrated)) + Text("  →  ").foregroundColor(Theme.muted) + Text(lufs(job.output?.levels.integrated)))
-                        .font(.system(size: 11.5)).monospacedDigit().frame(width: 96, alignment: .trailing)
+        let target = job.output?.settings.target ?? model.settings.target
+        return HStack(alignment: .center, spacing: 10) {
+            Text(String(format: "%02d", number)).font(.system(size: 12)).monospacedDigit().foregroundStyle(Theme.dim).frame(width: 20, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    if job.analysis?.info.isVideo == true { Image(systemName: "film").font(.system(size: 10)).foregroundStyle(Theme.dim) }
+                    Text(job.source.deletingPathExtension().lastPathComponent).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle)
                 }
-            } else if job.status == .failed || job.status == .cancelled {
-                Text(job.message).font(.system(size: 11.5)).foregroundStyle(job.status == .failed ? Theme.coral : Theme.muted).lineLimit(2)
+                if let analysis = job.analysis {
+                    HStack(spacing: 8) {
+                        Text(clockText(analysis.info.duration))
+                        Text(lufs(job.output?.levels.integrated ?? analysis.levels.integrated) + " LUFS")
+                    }.font(.system(size: 11.5)).foregroundStyle(Theme.muted).monospacedDigit()
+                    MiniRuler(source: analysis.levels.integrated, output: job.output?.levels.integrated, target: target).frame(height: 8).padding(.top, 2)
+                } else if CueStage(job) == .failed || CueStage(job) == .stopped {
+                    Text(job.message).font(.system(size: 11.5)).foregroundStyle(CueStage(job) == .failed ? Theme.hot : Theme.muted).lineLimit(2)
+                }
+                if job.status == .working { ProgressView(value: job.progress).progressViewStyle(.linear).tint(Theme.bone).controlSize(.small) }
             }
-            if job.status == .working { ProgressView(value: job.progress).progressViewStyle(.linear).tint(Theme.bone) }
+            Spacer(minLength: 4)
+            StageLabel(job: job)
         }
-        .padding(.horizontal, 16).padding(.vertical, 11)
+        .padding(.horizontal, 14).padding(.vertical, 9)
         .background(selected ? Theme.raised : Color.clear)
-        .overlay(alignment: .leading) { if selected { Rectangle().fill(Theme.teal).frame(width: 3) } }
-        .overlay(alignment: .top) { Rectangle().fill(Color(hex: 0x222831)).frame(height: 1) }
+        .overlay(alignment: .leading) { if selected { Rectangle().fill(Theme.bone).frame(width: 3) } }
         .contentShape(Rectangle())
         .onTapGesture { model.selection = job.id }
         .contextMenu {
@@ -401,158 +206,175 @@ struct ContentView: View {
     }
     var dropHint: some View {
         VStack(spacing: 3) {
-            Text("Drop audio or video").font(.system(size: 12.5, weight: .medium))
-            Text(model.quickLevel ? "Levelled copies go straight to your output folder" : "Files are measured as they arrive").hint().multilineTextAlignment(.center)
+            Text("Drop audio or video").font(.system(size: 13, weight: .medium))
+            Text(model.quickLevel ? "Levelled straight into \(model.outputFolderDisplay)" : "Each file is measured as it arrives. Originals are never changed.").hint().multilineTextAlignment(.center)
         }.frame(maxWidth: .infinity).padding(14)
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line2, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
+        .onTapGesture { model.addFiles() }
     }
 
-    // MARK: Centre
-    var center: some View {
+    // MARK: Stage
+    var stage: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                if let job = model.selected { cueDetail(job) } else { emptyState }
-            }.padding(.horizontal, 28).padding(.vertical, 22).frame(maxWidth: 980, alignment: .leading).frame(maxWidth: .infinity)
+            VStack(alignment: .leading, spacing: 16) {
+                if let job = model.selected { cueStage(job) } else { emptyState }
+            }.padding(.horizontal, 26).padding(.vertical, 22).frame(maxWidth: model.clipEditing ? .infinity : 1060, alignment: .leading).frame(maxWidth: .infinity)
         }.background(Theme.base)
     }
-    @ViewBuilder func cueDetail(_ job: CueJob) -> some View {
+    @ViewBuilder func cueStage(_ job: CueJob) -> some View {
         header(job)
-        if job.status == .failed { attention([job.message], color: Theme.coral) }
-        if job.status == .working {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack { Text(job.message).font(.system(size: 12.5)).foregroundStyle(Theme.text); Spacer(); Text("\(Int(job.progress * 100))%").monospacedDigit().foregroundStyle(Theme.muted) }
-                ProgressView(value: job.progress).tint(Theme.teal)
-            }.card()
-        }
         if let analysis = job.analysis {
-            ribbonCard(job, analysis)
-            playbackCard(job)
-            statsStrip(job, analysis)
-            if let output = job.output {
-                if model.outputIsStale { attention(["Settings have changed since this cue was levelled. Level it again to apply them."], color: Theme.amber) }
-                if !output.warnings.isEmpty { attention(output.warnings, color: Theme.amber) }
+            if model.clipEditing {
+                VStack(spacing: 12) {
+                    ClipGainEditor(job: job, analysis: analysis)
+                    transport(job)
+                }.card(padding: 16)
+            } else {
+                LevelReadout(job: job, analysis: analysis, target: job.output?.settings.target ?? model.settings.target,
+                             ceiling: model.settings.peak, peakLimit: model.settings.peakLimit, good: model.goodBand(target: job.output?.settings.target ?? model.settings.target))
+                waveCard(job)
+                checks(analysis)
+                if model.outputIsStale, job.output != nil {
+                    notice("Settings or edits have changed since this cue was levelled. Level it again to apply them.", tone: .changed)
+                }
+                details(job, analysis)
             }
-            HStack(alignment: .top, spacing: 28) {
-                checksColumn(analysis)
-                referenceColumn(job)
-            }
-            actions(job)
-        } else if job.status != .working {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("This cue hasn't been measured yet.").font(.system(size: 13)).foregroundStyle(Theme.text)
-                Button("Measure") { model.analyze() }.buttonStyle(CLButton(kind: .primary)).disabled(model.busy)
+        } else if job.status == .working {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack { Text(job.message).font(.system(size: 13)).foregroundStyle(Theme.text); Spacer(); Text("\(Int(job.progress * 100))%").monospacedDigit().foregroundStyle(Theme.muted) }
+                ProgressView(value: job.progress).tint(Theme.good)
             }.card()
+        } else if job.status == .failed {
+            notice(job.message, tone: .hot)
         }
     }
     func header(_ job: CueJob) -> some View {
-        HStack(alignment: .bottom, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(job.source.deletingPathExtension().lastPathComponent).font(.system(size: 26, weight: .semibold)).tracking(-0.4).lineLimit(2).textSelection(.enabled)
-                if let info = job.analysis?.info {
-                    HStack(spacing: 16) { ForEach(fileFacts(job.source, info), id: \.self) { Text($0) } }.font(.system(size: 12.5)).foregroundStyle(Theme.muted)
-                }
+        HStack(alignment: .lastTextBaseline, spacing: 14) {
+            Text(job.source.deletingPathExtension().lastPathComponent).font(.system(size: 24, weight: .semibold)).tracking(-0.4).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            if let info = job.analysis?.info {
+                Text(model.settings.mode.label).font(.system(size: 11.5, weight: .medium)).padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Theme.raised))
+                HStack(spacing: 12) { ForEach(fileFacts(job.source, info), id: \.self) { Text($0) } }.font(.system(size: 12.5)).foregroundStyle(Theme.muted).lineLimit(1)
             }
-            Spacer()
-            if let saved = job.exportURL {
-                VStack(alignment: .trailing, spacing: 3) {
-                    (Text("Saved as ").foregroundColor(Theme.muted) + Text(saved.lastPathComponent).foregroundColor(Theme.bone)).font(.system(size: 12.5)).lineLimit(1)
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([saved]) }.buttonStyle(.plain).font(.system(size: 12.5)).foregroundStyle(Theme.teal)
-                }
-            }
+            Spacer(minLength: 0)
         }
     }
     func fileFacts(_ source: URL, _ info: MediaInfo) -> [String] {
-        var parts = [source.pathExtension.uppercased(), clockText(info.duration), info.channels == 1 ? "Mono" : info.channels == 2 ? "Stereo" : "\(info.channels)-channel surround"]
-        if let rate = info.sampleRate { parts.append(String(format: "%g kHz", Double(rate) / 1000)) }
+        var parts = [clockText(info.duration), source.pathExtension.uppercased() + (info.sampleRate.map { String(format: " %g kHz", Double($0) / 1000) } ?? ""),
+                     info.channels == 1 ? "mono" : info.channels == 2 ? "stereo" : "\(info.channels) channels"]
         if let tracks = info.audioStreams, tracks > 1 { parts.append("\(tracks) audio tracks") }
-        if info.isVideo { parts.append(info.videoCodec.map { "Video \($0.uppercased())" } ?? "Video") }
+        if info.isVideo { parts.append(info.videoCodec.map { "video \($0.uppercased())" } ?? "video") }
         parts.append(ByteCountFormatter.string(fromByteCount: info.byteCount, countStyle: .file))
         return parts
     }
-    func ribbonCard(_ job: CueJob, _ analysis: Analysis) -> some View {
+
+    func waveCard(_ job: CueJob) -> some View {
         let target = job.output?.settings.target ?? model.settings.target
-        return VStack(alignment: .leading, spacing: 22) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Loudness").sectionTitle()
-                Spacer()
-                if let output = job.output {
-                    let gain = output.gainApplied ?? (output.levels.integrated - analysis.levels.integrated)
-                    Text(signed(gain) + " dB").font(.system(size: 22, weight: .semibold)).tracking(-0.4).monospacedDigit()
-                    Text(gainDescription(output)).font(.system(size: 13)).foregroundStyle(Theme.muted)
-                } else {
-                    let plan = LosslessPlan(levels: analysis.levels, target: target, ceiling: model.settings.peak, maxLimiting: model.settings.peakLimit ?? 0)
-                    Text("Needs " + signed(target - analysis.levels.integrated) + " dB").font(.system(size: 15, weight: .semibold)).monospacedDigit()
-                    if plan.shortfall > 0.05 { Text("peaks allow \(signed(plan.gain)) dB").font(.system(size: 13)).foregroundStyle(Theme.amber) }
-                }
-            }
-            VStack(spacing: 10) {
-                LoudnessRibbon(source: analysis.levels.integrated, output: job.output?.levels.integrated, target: target)
-                HStack { ForEach([-40, -35, -30, -25, -20, -15, -10, -5], id: \.self) { Text("−\(abs($0))"); Spacer() }; Text("0 LUFS") }
-                    .font(.system(size: 10.5)).foregroundStyle(Theme.dim).monospacedDigit()
-            }
-        }.card()
-    }
-    func gainDescription(_ output: ProcessedAudio) -> String {
-        switch output.finalGainMode {
-        case "fixed": return "one exact gain change"
-        case "limited": return "gain with \(String(format: "%.1f", output.limiting ?? 0)) dB of peak limiting"
-        case "dynamic": return "dynamic loudness control"
-        default: return output.settings.format == .lossless ? "gain change" : "processed"
-        }
-    }
-    func playbackCard(_ job: CueJob) -> some View {
-        VStack(spacing: 10) {
-            HStack {
+        return VStack(spacing: 12) {
+            HStack(spacing: 12) {
                 Segments(options: [(false, "Original"), (true, "Levelled")], selection: Binding(get: { model.processedPreview }, set: { model.switchPreview($0) }))
-                    .frame(width: 190).disabled(job.output == nil || model.clipEditing)
-                Button {
-                    model.clipEditing.toggle()
-                    if model.clipEditing { model.switchPreview(false) }
-                    else {
-                        model.selectedRegion = nil
-                        // Render straight away so the edits can be heard in Levelled.
-                        if model.outputIsStale || (job.output == nil && !ClipGain.active(job.clipGain).isEmpty) { model.processSelected() }
-                    }
-                } label: {
-                    Label(model.clipEditing ? "Done editing" : "Clip gain" + (ClipGain.active(job.clipGain).isEmpty ? "" : " · \(ClipGain.active(job.clipGain).count)"), systemImage: "slider.vertical.3")
-                }.buttonStyle(CLButton(kind: model.clipEditing ? .primary : .ghost)).disabled(job.analysis == nil || model.busy)
-                .help("Raise or lower sections of this cue, like clip gain in Pro Tools")
+                    .frame(width: 200).disabled(job.output == nil)
+                    .help(job.output == nil ? "Level the cue to hear the result" : "Switch between the original and the levelled cue")
                 Spacer()
                 if !model.currentCurve.isEmpty {
                     HStack(spacing: 14) {
-                        HStack(spacing: 6) { Capsule().fill(Theme.amber).frame(width: 14, height: 2); Text("Short-term loudness") }
-                        HStack(spacing: 6) { Capsule().fill(Theme.bone.opacity(0.55)).frame(width: 14, height: 1); Text("Target \(lufs(model.settings.target))") }
-                        if model.goodBand(target: model.settings.target) != nil {
-                            HStack(spacing: 6) { RoundedRectangle(cornerRadius: 2).fill(Theme.lime.opacity(0.35)).frame(width: 14, height: 8); Text("Good range") }
-                                .help("Where your approved \(model.settings.mode.rawValue) references sit over time. Loudness inside the band sounds like good material.")
+                        HStack(spacing: 6) { Capsule().fill(Theme.changed).frame(width: 14, height: 2); Text("Loudness over time") }
+                        if model.goodBand(target: target) != nil {
+                            HStack(spacing: 6) { RoundedRectangle(cornerRadius: 2).fill(Theme.good.opacity(0.25)).overlay(RoundedRectangle(cornerRadius: 2).stroke(Theme.good.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))).frame(width: 14, height: 8)
+                                Text("Good range for \(model.settings.mode.label)") }
+                                .help("Where your good \(model.settings.mode.label) cues sit over time. Loudness inside the band sounds like good material.")
                         }
-                    }.font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+                    }.font(.system(size: 12)).foregroundStyle(Theme.muted)
                 }
             }
-            if model.clipEditing, let analysis = job.analysis {
-                ClipGainEditor(job: job, analysis: analysis)
-            } else {
-                Waveform(peaks: model.currentWaveform, curve: model.currentCurve, target: job.output?.settings.target ?? model.settings.target,
-                         good: model.goodBand(target: job.output?.settings.target ?? model.settings.target), position: model.playhead, duration: model.duration, seek: model.seek)
-            }
-            HStack(spacing: 12) {
-                Button { model.playPause() } label: {
-                    Image(systemName: model.playing ? "pause.fill" : "play.fill").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.base)
-                        .frame(width: 30, height: 30).background(Circle().fill(Theme.bone))
-                }.buttonStyle(.plain).keyboardShortcut(.space, modifiers: []).accessibilityLabel(model.playing ? "Pause" : "Play")
-                Text(clockText(model.playhead)).monospacedDigit()
-                Slider(value: Binding(get: { min(model.duration, model.playhead) }, set: { model.seek($0) }), in: 0 ... max(0.01, model.duration)).controlSize(.small).accessibilityLabel("Playback position").disabled(model.duration == 0)
-                Text(clockText(model.duration)).monospacedDigit()
-                Toggle("Match loudness", isOn: $model.matchPreview).toggleStyle(.checkbox).onChange(of: model.matchPreview) { _ in model.applyVolume() }.disabled(job.output == nil)
-                    .help("Plays original and levelled versions at equal loudness so you compare sound, not volume")
-            }.font(.system(size: 12)).foregroundStyle(Theme.muted)
-            LoudnessMeterBar(reading: model.meterReading(at: model.playhead), target: job.output?.settings.target ?? model.settings.target, ready: !model.meterCurve.isEmpty)
+            Waveform(peaks: model.currentWaveform, curve: model.currentCurve, target: target, good: model.goodBand(target: target),
+                     edits: model.processedPreview ? [] : ClipGain.active(job.clipGain), position: model.playhead, duration: model.duration, seek: model.seek)
+            transport(job)
             if job.analysis?.info.isVideo == true {
-                DisclosureGroup("Picture") { VideoPlayer(player: model.player).frame(height: 220).clipShape(RoundedRectangle(cornerRadius: 8)).padding(.top, 8) }
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.text)
+                DisclosureGroup("Picture") { VideoPlayer(player: model.player).frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 8)).padding(.top, 8) }
+                    .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.text)
             }
-        }.padding(.horizontal, 16).padding(.vertical, 14)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.panel)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line))
+        }.card(padding: 16)
+    }
+    func transport(_ job: CueJob) -> some View {
+        HStack(spacing: 14) {
+            Button { model.playPause() } label: {
+                Image(systemName: model.playing ? "pause.fill" : "play.fill").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.base)
+                    .frame(width: 34, height: 34).background(Circle().fill(Theme.bone))
+            }.buttonStyle(.plain).keyboardShortcut(.space, modifiers: []).accessibilityLabel(model.playing ? "Pause" : "Play")
+            Text(clockText(model.playhead)).monospacedDigit()
+            Slider(value: Binding(get: { min(model.duration, model.playhead) }, set: { model.seek($0) }), in: 0 ... max(0.01, model.duration)).controlSize(.small).accessibilityLabel("Playback position").disabled(model.duration == 0)
+            Text(clockText(model.duration)).monospacedDigit()
+            LoudnessMeterBar(reading: model.meterReading(at: model.playhead), target: job.output?.settings.target ?? model.settings.target, ready: !model.meterCurve.isEmpty)
+                .frame(width: 330)
+            Toggle("Match", isOn: $model.matchPreview).toggleStyle(.checkbox).onChange(of: model.matchPreview) { _ in model.applyVolume() }.disabled(job.output == nil)
+                .help("Plays the original and levelled versions at equal loudness, so you compare sound, not volume")
+        }.font(.system(size: 12)).foregroundStyle(Theme.muted)
+    }
+
+    /// Source checks as short pills; the full sentence is in the tooltip.
+    func checks(_ analysis: Analysis) -> some View {
+        let findings = analysis.sourceFindings
+        func short(_ f: String) -> String {
+            if f.contains("clipping") { return "Probable clipping" }
+            if f.contains("DC offset") { return "DC offset" }
+            if f.contains("out of phase") { return "Left and right out of phase" }
+            if f.contains("identical") { return "Mono in a stereo file" }
+            if f.contains("at the start") { return f.components(separatedBy: " of silence").first.map { "\($0) silence at the start" } ?? "Silence at the start" }
+            if f.contains("at the end") { return f.components(separatedBy: " of silence").first.map { "\($0) silence at the end" } ?? "Silence at the end" }
+            if f.contains("Surround") { return "Surround, will be downmixed" }
+            if f.contains("audio tracks") { return f.components(separatedBy: ".").first ?? "Several audio tracks" }
+            return f
+        }
+        var good: [String] = []
+        if analysis.stereo != nil {
+            if !findings.contains(where: { $0.contains("clipping") }) { good.append("No clipping") }
+            if !findings.contains(where: { $0.contains("DC offset") }) { good.append("No DC offset") }
+            if analysis.info.channels >= 2, !findings.contains(where: { $0.contains("out of phase") }) { good.append("Phase OK") }
+        }
+        let flow = FlowRow(spacing: 8)
+        return flow {
+            ForEach(findings, id: \.self) { pill(short($0), tone: .changed).help($0) }
+            ForEach(good, id: \.self) { pill($0, tone: .good) }
+            if analysis.stereo == nil { pill("Measure again for source checks", tone: .neutral) }
+        }
+    }
+    func pill(_ text: String, tone: LevelTone) -> some View {
+        HStack(spacing: 7) { Circle().fill(Theme.tone(tone)).frame(width: 7, height: 7); Text(text) }
+            .font(.system(size: 12)).foregroundStyle(Theme.text)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.panel)).overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
+    }
+    func notice(_ text: String, tone: LevelTone) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Circle().fill(Theme.tone(tone)).frame(width: 7, height: 7).padding(.top, 5)
+            Text(text).font(.system(size: 12.5)).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.tone(tone).opacity(0.07))).overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.tone(tone).opacity(0.25)))
+    }
+
+    /// Measurements and the reference comparison, for anyone who wants the numbers.
+    func details(_ job: CueJob, _ analysis: Analysis) -> some View {
+        DisclosureGroup(isExpanded: $showDetails) {
+            VStack(alignment: .leading, spacing: 14) {
+                statsStrip(job, analysis)
+                if let check = model.referenceCheck(for: job) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Against your references").font(.system(size: 13, weight: .semibold))
+                        ForEach(check.findings, id: \.self) { f in
+                            HStack(alignment: .top, spacing: 8) { Circle().fill(f.needsAttention ? Theme.changed : Theme.good).frame(width: 6, height: 6).padding(.top, 5); Text(f.text).hint() }
+                        }
+                    }
+                } else if model.references.isEmpty {
+                    Text("Import your good reference cues in Show settings to compare every cue with finished material.").hint()
+                }
+                HStack(spacing: 8) {
+                    Button("Measure again") { model.analyze() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)
+                    Button("Mark as good…") { model.beginAddingReference() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)
+                    if job.output != nil { Button("Save cue report…") { model.saveReport() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy) }
+                }
+            }.padding(.top, 10)
+        } label: { Text("Measurements").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.text) }
     }
     func statsStrip(_ job: CueJob, _ analysis: Analysis) -> some View {
         let output = job.output
@@ -562,10 +384,8 @@ struct ContentView: View {
             stat("True peak", value: output?.levels.truePeak ?? analysis.levels.truePeak, unit: "dBTP", was: output.map { _ in analysis.levels.truePeak })
             stat("Loudness range", value: output?.levels.loudnessRange ?? analysis.levels.loudnessRange, unit: "LU", was: output.map { _ in analysis.levels.loudnessRange })
             stat("Peak to average", value: output?.levels.crestFactor ?? analysis.levels.crestFactor, unit: "dB", was: output == nil ? nil : analysis.levels.crestFactor)
-            stat("Headroom left", value: ceiling - (output?.levels.truePeak ?? analysis.levels.truePeak), unit: "dB", note: "to \(lufs(ceiling)) ceiling")
-        }
-        .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+            stat("Headroom", value: ceiling - (output?.levels.truePeak ?? analysis.levels.truePeak), unit: "dB", note: "to the \(lufs(ceiling)) ceiling")
+        }.card(padding: 0)
     }
     func stat(_ title: String, value: Double?, unit: String, was: Double? = nil, note: String? = nil, first: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -581,308 +401,38 @@ struct ContentView: View {
             }.font(.system(size: 11.5)).foregroundStyle(Theme.dim).monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, first ? 0 : 14).padding(.vertical, 12)
+        .padding(.horizontal, 14).padding(.vertical, 12)
         .overlay(alignment: .leading) { if !first { Rectangle().fill(Theme.line).frame(width: 1) } }
     }
-    func attention(_ notes: [String], color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            ForEach(notes, id: \.self) { note in
-                HStack(alignment: .top, spacing: 9) { Circle().fill(color).frame(width: 7, height: 7).padding(.top, 5); Text(note).font(.system(size: 12.5)).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
-            }
-        }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(color.opacity(0.07))).overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.22)))
-    }
-    func note(_ text: String, good: Bool) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            Circle().fill(good ? Theme.teal : Theme.amber).frame(width: 7, height: 7).padding(.top, 5)
-            Text(text).font(.system(size: 12.5)).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-        }
-    }
-    func checksColumn(_ analysis: Analysis) -> some View {
-        let findings = analysis.sourceFindings
-        return VStack(alignment: .leading, spacing: 7) {
-            Text("Source checks").sectionTitle().padding(.bottom, 2)
-            if findings.isEmpty { note(analysis.stereo == nil ? "Measure again to check clipping, phase and silence." : "No clipping, DC offset, phase or silence problems.", good: analysis.stereo != nil) }
-            ForEach(findings, id: \.self) { note($0, good: false) }
-            // One-click repairs for what the checks found (applied when the cue is levelled).
-            let edit = model.selectedEdit
-            HStack(spacing: 8) {
-                if let dc = analysis.levels.dcOffset, abs(dc) >= 0.001 {
-                    Button(edit.removeDC ? "DC offset fix on ✓" : "Remove DC offset") { model.fixDCOffset() }.buttonStyle(CLButton(kind: .ghost)).disabled(edit.removeDC)
-                }
-                if analysis.info.channels >= 2, let c = analysis.stereo?.correlation, c < -0.1 {
-                    Button(edit.polarity == .right ? "Right channel flipped ✓" : "Flip right channel") { model.fixPolarity(edit.polarity == .right ? .none : .right) }.buttonStyle(CLButton(kind: .ghost))
-                }
-                if let s = analysis.stereo, s.headSilence >= 2 || s.tailSilence >= 2 {
-                    Button("Trim silence") { model.trimToSound() }.buttonStyle(CLButton(kind: .ghost))
-                }
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-    @ViewBuilder func referenceColumn(_ job: CueJob) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("Against your references").sectionTitle().padding(.bottom, 2)
-            if model.references.isEmpty {
-                Text("Import your approved reference library to compare each cue with finished material.").hint()
-                Button("Import library…") { model.importReferenceLibrary() }.buttonStyle(CLButton()).disabled(model.busy)
-            } else if let check = model.referenceCheck(for: job) {
-                ForEach(check.findings, id: \.self) { note($0.text, good: !$0.needsAttention) }
-                if let analysis = job.analysis, let cue = model.cueSpread(analysis), let good = check.span?.spread {
-                    let inRange = cue <= good.upperBound + 1
-                    note("Moves \(String(format: "%.1f", cue)) LU between quieter and louder stretches; good \(check.mode.rawValue) moves \(String(format: "%.1f–%.1f", good.lowerBound, good.upperBound)) LU.\(inRange ? "" : " Even out will bring the outliers back.")", good: inRange)
-                }
-                if let approach = check.approach, let proposed = check.recommendedSettings(from: model.settings), model.settings.format != .lossless {
-                    let changes = ReferenceCheck.describeChanges(from: model.settings, to: proposed)
-                    HStack {
-                        Text("Recommended: \(approach.rawValue)").font(.system(size: 12.5, weight: .semibold))
-                        Spacer()
-                        Button("Apply") { model.applyReferencePlan() }.buttonStyle(CLButton()).disabled(model.busy || changes.isEmpty)
-                    }.padding(.top, 4)
-                    ForEach(changes, id: \.self) { Text($0).hint() }
-                }
-            }
-            if job.analysis != nil {
-                Button { model.beginAddingReference() } label: { Label("Add as an approved reference…", systemImage: "star") }
-                    .buttonStyle(CLButton(kind: .ghost)).disabled(model.busy).padding(.top, 4)
-                    .help("This cue sounds right on the PA: keep its measurements as an example of good")
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-    func actions(_ job: CueJob) -> some View {
-        HStack(spacing: 8) {
-            Button(job.output == nil ? (model.quickLevel ? "Level this cue" : "Process this cue") : "Level again") { model.processSelected() }.buttonStyle(CLButton(kind: .primary)).disabled(model.busy)
-            Button("Measure again") { model.analyze() }.buttonStyle(CLButton()).disabled(model.busy)
-            Spacer()
-            if job.output != nil {
-                Button("Export…") { model.exportSelected() }.buttonStyle(CLButton()).disabled(model.busy)
-                if job.output?.audioCompanion != nil { Button("Export WAV…") { model.exportSelected(audioCopy: true) }.buttonStyle(CLButton()).disabled(model.busy) }
-                Button("Save report…") { model.saveReport() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)
-            }
-        }.padding(.top, 4)
-    }
+
+    // MARK: Empty state (first run)
     var emptyState: some View {
-        VStack(spacing: 18) {
-            Spacer(minLength: 70)
-            LogoMark().frame(width: 88, height: 88)
-            Text(model.quickLevel ? "Drop cues to level them" : "Drop cues to get started").font(.system(size: 26, weight: .semibold)).tracking(-0.4)
-            Text(model.quickLevel
-                 ? "Each file is brought to \(lufs(model.settings.target)) LUFS with one exact gain change and saved to \(model.outputFolderDisplay). Picture and audio quality are untouched."
-                 : "Turn on Quick Level to level dropped files automatically, or add files to measure and process them one by one.")
-                .font(.system(size: 13.5)).foregroundStyle(Theme.muted).multilineTextAlignment(.center).frame(maxWidth: 460)
-            HStack(spacing: 10) {
-                Button { model.addFiles() } label: { Label("Add files", systemImage: "plus") }.buttonStyle(CLButton(kind: .primary))
-                if !model.quickLevel { Button("Turn on Quick Level") { model.setQuickLevel(true) }.buttonStyle(CLButton()) }
+        VStack(spacing: 22) {
+            Spacer(minLength: 60)
+            LogoMark(tile: true).frame(width: 104, height: 104)
+            VStack(spacing: 8) {
+                Text("Level your show's cues").font(.system(size: 28, weight: .semibold)).tracking(-0.5)
+                Text("Every cue comes out at the same loudness on the PA, with nothing else about it changed.").font(.system(size: 14)).foregroundStyle(Theme.muted)
             }
-            Text("WAV, AIFF, MP3, M4A, FLAC, MP4, MOV and most other audio and video files").hint().padding(.top, 10)
+            HStack(alignment: .top, spacing: 14) {
+                step(1, "Add your cues", "Drop audio or video anywhere in this window. Each file is measured as it arrives.")
+                step(2, "Check the plan", "CueLevel shows what it would change and why, compared with cues you've marked as good.")
+                step(3, "Level and deliver", "Levelled copies land in \(model.outputFolderDisplay), ready for playback.")
+            }.frame(maxWidth: 820)
+            HStack(spacing: 10) {
+                Button { model.addFiles() } label: { Label("Add cues…", systemImage: "plus") }.buttonStyle(CLButton(kind: .primary))
+                Button("Show settings…") { showSettings = true }.buttonStyle(CLButton())
+            }
+            Text("WAV, AIFF, MP3, M4A, FLAC, MP4, MOV and most other audio and video files. Originals are never changed.").hint()
             Spacer(minLength: 40)
         }.frame(maxWidth: .infinity)
     }
-
-    // MARK: Inspector
-    var inspector: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if let job = model.selected { thisCueSection(job) }
-                section {
-                    HStack { Text("Level to").sectionTitle(); Spacer(); standardsMenu }
-                    valueRow("Target", value: $model.settings.target, range: -30 ... -12, unit: "LUFS")
-                    valueRow("Peak ceiling", value: $model.settings.peak, range: -6 ... -1, unit: "dBTP")
-                    Toggle(isOn: $model.evenOut) { Text("Even out loud and quiet stretches").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
-                    Toggle(isOn: $model.autoTrim) { Text("Trim silence at start and end").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
-                    Text(model.evenOut ? "Quick Level turns stretches more than 2 dB louder or quieter than the rest back toward it, with short fades. Volume only; edit them under Clip gain. Turn off for music." : "Quick Level applies one gain change to the whole file.").hint()
-                }
-                section {
-                    Text("When peaks won't fit").sectionTitle()
-                    Segments(options: [(false, "Stay quieter"), (true, "Limit peaks")], selection: Binding(get: { model.settings.peakLimit != nil }, set: { model.settings.peakLimit = $0 ? (model.settings.peakLimit ?? 3) : nil }))
-                    if model.settings.peakLimit != nil {
-                        valueRow("Most limiting allowed", value: Binding(get: { model.settings.peakLimit ?? 3 }, set: { model.settings.peakLimit = $0 }), range: 1 ... 6, unit: "dB")
-                        Text("Only the peaks that would pass the ceiling are touched, with 4× oversampling. Cues needing more stay partly quieter.").hint()
-                    } else {
-                        Text("Cues are never touched apart from gain. The report shows how far below target each one lands.").hint()
-                    }
-                }
-                section {
-                    Text("Output").sectionTitle()
-                    folderRow(model.quickFolder, empty: "Desktop › CueLevel › Levelled") { model.chooseQuickFolder() }
-                    if model.quickFolder != nil { Button("Use Desktop › CueLevel") { model.useDefaultOutputFolder() }.buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.teal) }
-                    Text("Files are named “<original>_LVL\(String(format: "%.0f", model.settings.target)).wav/.mov”. Reports go to a Reports folder next to them.").hint()
-                    Menu {
-                        ForEach(OutputFormat.allCases) { format in Button(format.rawValue) { model.settings.format = format } }
-                    } label: { HStack { Text("File type").foregroundStyle(Theme.text); Spacer(); Text(model.settings.format.rawValue).foregroundStyle(Theme.bone) } }
-                        .menuStyle(.borderlessButton).font(.system(size: 12.5)).disabled(model.quickLevel)
-                    Text(formatHint).hint()
-                }
-                section {
-                    Toggle(isOn: Binding(get: { model.watching }, set: { model.setWatching($0) })) { Text("Watch a folder").sectionTitle().frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
-                    if model.watchFolder != nil || model.watching { folderRow(model.watchFolder, empty: "Choose folder") { model.chooseWatchFolder() } }
-                    Text("New files are added the moment they finish copying in\(model.quickLevel ? ", and levelled straight away" : ""). Files already there are left alone.").hint()
-                }
-                section {
-                    HStack { Text("Content").sectionTitle(); Spacer(); presetsMenu }
-                    Segments(options: [(ContentMode.music, "Music"), (ContentMode.mixed, "Mixed"), (ContentMode.voice, "Voice")], selection: Binding(get: { model.settings.mode }, set: { model.changeMode($0) }))
-                    Text(model.settings.mode.detail).hint()
-                }
-                processingSection
-                referencesSection
-            }
-        }.background(Theme.panel).disabled(model.busy)
-    }
-    var formatHint: String {
-        switch model.settings.format {
-        case .lossless: return "Picture copied untouched into MOV (MKV for other containers). Audio uncompressed at its own sample rate, with one exact gain change."
-        case .automatic: return "Audio becomes 24-bit WAV. Video keeps its picture with AAC stereo audio."
-        case .videoAndWav: return "Video with AAC audio, plus a 24-bit WAV rendered from the source."
-        default: return "Audio only, 48 kHz stereo. Video is not included."
-        }
-    }
-    var standardsMenu: some View {
-        Menu("Standards") { ForEach(LoudnessPreset.all) { preset in Button(preset.name) { model.applyLoudnessPreset(preset) } } }
-            .menuStyle(.borderlessButton).font(.system(size: 12)).foregroundStyle(Theme.teal).fixedSize()
-    }
-    var presetsMenu: some View {
-        Menu("Presets") {
-            Button("Music defaults") { model.settings = ProcessingSettings(); model.changeMode(.music) }
-            Button("Mixed defaults") { model.settings = ProcessingSettings() }
-            Button("Voice defaults") { model.settings = ProcessingSettings(); model.changeMode(.voice) }
-            if !model.presets.isEmpty { Divider(); ForEach(model.presets) { preset in Button(preset.name) { model.settings = preset.settings } } }
-            Divider(); Button("Save current settings…") { model.showSavePreset = true }
-        }.menuStyle(.borderlessButton).font(.system(size: 12)).fixedSize()
-    }
-    var processingSection: some View {
-        section {
-            Button { withAnimation(.easeOut(duration: 0.15)) { showProcessing.toggle() } } label: {
-                HStack { Text("Processing").sectionTitle(); Spacer(); Text(model.settings.format == .lossless ? "Off in lossless mode" : showProcessing ? "Hide" : "Show").font(.system(size: 12)).foregroundStyle(Theme.muted); Image(systemName: showProcessing ? "chevron.up" : "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.muted) }
-                    .contentShape(Rectangle())
-            }.buttonStyle(.plain)
-            Text("Leveler, compression, noise and tone tools for cues that need more than gain. They change the sound, so they are bypassed in lossless mode.").hint()
-            if showProcessing {
-                Group {
-                    module("Automatic leveler", "Evens out quiet and loud passages", isOn: $model.settings.levelerOptions.enabled)
-                    if model.settings.levelerOptions.enabled {
-                        Segments(options: LevelerStyle.allCases.map { ($0, $0.rawValue) }, selection: Binding(get: { model.settings.levelerOptions.style }, set: { model.settings.levelerOptions.apply($0) }))
-                    }
-                    module("Peak compression", "Restrains sudden loud passages", isOn: $model.settings.compression)
-                    module("Rumble filter", "Removes low handling noise", isOn: $model.settings.highpass)
-                    module("De-esser", "Softens sharp S sounds", isOn: $model.settings.deess)
-                    module("Harshness control", "Tames excess upper-mid energy", isOn: $model.settings.soften)
-                    module("Noise reduction", "Cleans background before levelling", isOn: $model.settings.denoise)
-                    if model.settings.denoise {
-                        Segments(options: model.settings.mode == .voice ? [(NoiseMethod.steady, "Steady noise"), (NoiseMethod.speech, "Speech denoiser")] : [(NoiseMethod.steady, "Steady noise")], selection: $model.settings.cleanupOptions.method)
-                        if model.settings.cleanupOptions.method == .speech { valueRow("Strength", value: $model.settings.cleanupOptions.speechStrength, range: 0 ... 100, unit: "%") }
-                        else { valueRow("Reduction", value: $model.settings.noiseReduction, range: 1 ... 12, unit: "dB") }
-                    }
-                    HStack { Text("Mains hum").font(.system(size: 12.5)).foregroundStyle(Theme.text); Spacer(); Picker("Mains hum", selection: $model.settings.cleanupOptions.hum) { ForEach(HumMode.allCases) { Text($0.rawValue).tag($0) } }.labelsHidden().fixedSize() }
-                    if model.settings.cleanupOptions.hum != .off { valueRow("Hum reduction", value: $model.settings.cleanupOptions.humReduction, range: 1 ... 18, unit: "dB") }
-                }
-                Group {
-                    if model.settings.mode == .voice {
-                        module("Dynamic voice EQ", "Small cuts for boom, boxiness and edge", isOn: $model.settings.enhancementOptions.voiceEQ)
-                        module("Plosive reduction", "Restrains P and B bursts", isOn: $model.settings.enhancementOptions.plosives)
-                    }
-                    module("Repair clipping", "Rebuilds flattened peaks; may add artifacts", isOn: $model.settings.enhancementOptions.repairClipping)
-                    module("Brightness", "Lifts existing highs, including hiss", isOn: $model.settings.enhancementOptions.brightness)
-                    if model.settings.enhancementOptions.brightness { valueRow("High-shelf gain", value: $model.settings.enhancementOptions.brightnessGain, range: 0 ... 3, unit: "dB") }
-                    Button { showAdvanced.toggle() } label: { HStack { Text("Fine controls").font(.system(size: 12.5, weight: .medium)); Spacer(); Image(systemName: showAdvanced ? "chevron.up" : "chevron.down").font(.system(size: 10, weight: .semibold)) }.foregroundStyle(Theme.text).contentShape(Rectangle()) }.buttonStyle(.plain).padding(.top, 4)
-                    if showAdvanced { advancedControls }
-                }
-            }
-        }
-    }
-    @ViewBuilder var advancedControls: some View {
-        if model.settings.levelerOptions.enabled {
-            valueRow("Maximum lift", value: $model.settings.levelerOptions.maximumLift, range: 0 ... 12, unit: "dB")
-            valueRow("Smoothing", value: $model.settings.levelerOptions.response, range: 1 ... 10, unit: "s")
-            valueRow("Quiet threshold", value: $model.settings.levelerOptions.noiseThreshold, range: -70 ... -25, unit: "dBFS")
-        }
-        Toggle(isOn: Binding(get: { model.settings.workingLevel != nil }, set: { model.settings.workingLevel = $0 ? ReferenceCheck.workingLevel : nil })) {
-            Text("Level-independent dynamics").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading)
-        }.toggleStyle(CLSwitch())
-        if model.settings.workingLevel != nil { valueRow("Working level", value: Binding(get: { model.settings.workingLevel ?? ReferenceCheck.workingLevel }, set: { model.settings.workingLevel = $0 }), range: -24 ... -14, unit: "LUFS") }
-        if model.settings.enhancementOptions.voiceEQ { valueRow("EQ cut per band", value: $model.settings.enhancementOptions.eqLimit, range: 2 ... 3, unit: "dB") }
-        if model.settings.enhancementOptions.plosives {
-            valueRow("Plosive cut", value: $model.settings.enhancementOptions.plosiveLimit, range: 2 ... 6, unit: "dB")
-            valueRow("Plosive threshold", value: $model.settings.enhancementOptions.plosiveThreshold, range: -40 ... -12, unit: "dBFS")
-        }
-        valueRow("Range target", value: $model.settings.range, range: 5 ... 20, unit: "LU")
-        valueRow("Compression ratio", value: $model.settings.ratio, range: 1 ... 4, unit: ":1")
-        valueRow("Rumble cutoff", value: $model.settings.cutoff, range: 30 ... 150, unit: "Hz")
-        valueRow("De-ess amount", value: $model.settings.deessAmount, range: 0 ... 0.6, unit: "")
-        if model.settings.denoise && model.settings.cleanupOptions.method == .steady {
-            valueRow("Noise floor", value: $model.settings.cleanupOptions.noiseFloor, range: -80 ... -20, unit: "dB")
-            Toggle(isOn: $model.settings.cleanupOptions.trackNoise) { Text("Follow changing noise").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
-        }
-        valueRow("Harshness band", value: $model.settings.frequency, range: 2000 ... 6000, unit: "Hz")
-        valueRow("Harshness cut", value: $model.settings.cut, range: 2 ... 3, unit: "dB")
-    }
-    var referencesSection: some View {
-        section {
-            Text("References").sectionTitle()
-            Text(model.references.summary).hint()
-            HStack(spacing: 8) {
-                Button(model.references.isEmpty ? "Import library…" : "Replace library…") { model.importReferenceLibrary() }.buttonStyle(CLButton())
-                Button("Match a reference…") { model.chooseReference() }.buttonStyle(CLButton(kind: .ghost)).help("Measure a finished cue and use its loudness as the target")
-            }
-            if !model.references.isEmpty {
-                DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(model.references.records) { record in
-                            HStack(spacing: 8) {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(record.name).font(.system(size: 12)).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.middle)
-                                    Text("\(record.category ?? "") · \(lufs(record.cuelevelStereo.integratedLufs)) LUFS · LRA \(String(format: "%.1f", record.cuelevelStereo.loudnessRangeLu))").hint()
-                                }
-                                Spacer(minLength: 4)
-                                Button { model.removeReference(record) } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(Theme.muted)
-                                    .help("Remove from the catalogue (the recording is not touched)").disabled(model.busy)
-                            }
-                        }
-                    }.padding(.top, 4)
-                } label: { Text("Catalogue (\(model.references.records.count))").font(.system(size: 12.5)).foregroundStyle(Theme.text) }
-                if let span = model.references.span(for: model.settings.mode), let spread = span.spread {
-                    Text("Good \(model.settings.mode.rawValue) moves \(String(format: "%.1f–%.1f", spread.lowerBound, spread.upperBound)) LU between quieter and louder stretches (\(span.shapeCount) reference\(span.shapeCount == 1 ? "" : "s")). Even out keeps cues within ±\(String(format: "%g", model.references.evenOutTolerance(for: model.settings.mode))) dB.").hint()
-                }
-                if model.referencesMissingShapes > 0 {
-                    Button("Measure reference shapes… (\(model.referencesMissingShapes) missing)") { model.measureReferenceShapes() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)
-                        .help("Read your reference recordings once to learn how good material moves over time. Nothing is copied.")
-                }
-                Toggle(isOn: $model.autoRecommend) { Text("Apply each cue's recommendation").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
-                Text("When processing (not in lossless mode), each cue gets Preserve or Gentle correction based on your approved references.").hint()
-            }
-        }
-    }
-    func section<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 11) { content() }
-            .padding(.horizontal, 18).padding(.vertical, 15).frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
-    }
-    func module(_ title: String, _ subtitle: String, isOn: Binding<Bool>) -> some View {
-        Toggle(isOn: isOn) {
-            VStack(alignment: .leading, spacing: 2) { Text(title).font(.system(size: 12.5, weight: .medium)); Text(subtitle).hint() }.frame(maxWidth: .infinity, alignment: .leading)
-        }.toggleStyle(CLSwitch())
-    }
-    func folderRow(_ folder: URL?, empty: String, choose: @escaping () -> Void) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(Theme.muted)
-            Text(folder.map { $0.deletingLastPathComponent().lastPathComponent + " › " + $0.lastPathComponent } ?? empty).font(.system(size: 12)).foregroundStyle(folder == nil ? Theme.muted : Theme.bone).lineLimit(1).truncationMode(.head)
-            Spacer()
-            Button(folder == nil ? "Choose" : "Change", action: choose).buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.teal)
-        }.padding(.horizontal, 10).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.field)).overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
-        .help(folder?.path ?? empty)
-    }
-    func valueRow(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, unit: String) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text(title).font(.system(size: 12.5)).foregroundStyle(Theme.text)
-                Spacer()
-                HStack(spacing: 4) {
-                    TextField(title, value: value, format: .number.precision(.fractionLength(1))).textFieldStyle(.plain).multilineTextAlignment(.trailing).frame(width: 48).monospacedDigit()
-                    if !unit.isEmpty { Text(unit).foregroundStyle(Theme.muted) }
-                }.font(.system(size: 12.5)).padding(.horizontal, 8).padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.field)).overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.line))
-            }
-            Slider(value: value, in: range).controlSize(.small).accessibilityLabel(title)
-        }
+    func step(_ n: Int, _ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(n)").font(.readout(15)).foregroundStyle(Theme.onGood).frame(width: 26, height: 26).background(Circle().fill(Theme.good))
+            Text(title).font(.system(size: 14, weight: .semibold))
+            Text(detail).hint()
+        }.card(padding: 16).frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: Sheets
@@ -909,7 +459,7 @@ struct ContentView: View {
         }()
         return VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 14) {
-                LogoMark().frame(width: 52, height: 52)
+                LogoMark(tile: true).frame(width: 60, height: 60)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(headline).font(.system(size: 19, weight: .semibold)).tracking(-0.2)
                     if let feed, justUpdated {
@@ -935,7 +485,7 @@ struct ContentView: View {
             }
             if let feed, !feed.noteLines.isEmpty, updater.state != .upToDate {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("WHAT'S NEW").font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.muted)
+                    Text("What's new").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.bone)
                     ForEach(feed.noteLines, id: \.self) { line in
                         HStack(alignment: .firstTextBaseline, spacing: 9) {
                             Image(systemName: "sparkle").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.teal)
@@ -964,7 +514,7 @@ struct ContentView: View {
     var referenceSheet: some View {
         let job = model.jobs.first { $0.id == model.referenceDraft }
         return VStack(alignment: .leading, spacing: 14) {
-            Text("Add to your reference catalogue").font(.system(size: 18, weight: .semibold))
+            Text("Mark as a good cue").font(.system(size: 18, weight: .semibold))
             Text("Add only finished cues you have heard on the PA and approved. CueLevel keeps their measurements as an example of what good sounds like; the recording itself is not copied.").hint()
             if let job, let analysis = job.analysis {
                 VStack(alignment: .leading, spacing: 4) {
@@ -979,24 +529,227 @@ struct ContentView: View {
                 }
             }
             Text("Content").sectionTitle()
-            Segments(options: ContentMode.allCases.map { ($0, $0.rawValue) }, selection: $model.referenceDraftCategory)
+            Segments(options: ContentMode.allCases.map { ($0, $0.label) }, selection: $model.referenceDraftCategory)
             TextField("Note (optional), e.g. \"walk-in music, sounded right at desk gain\"", text: $model.referenceDraftNote).textFieldStyle(.roundedBorder)
             HStack {
                 Button("Cancel") { model.referenceDraft = nil }.buttonStyle(CLButton(kind: .ghost))
                 Spacer()
-                Button("Add reference") { model.addReference() }.buttonStyle(CLButton(kind: .primary)).keyboardShortcut(.defaultAction).disabled(model.busy || job?.analysis == nil)
+                Button("Add to references") { model.addReference() }.buttonStyle(CLButton(kind: .primary)).keyboardShortcut(.defaultAction).disabled(model.busy || job?.analysis == nil)
             }
         }.padding(24).frame(width: 480).background(Theme.panel).preferredColorScheme(.dark)
     }
     var aboutSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 14) { LogoMark().frame(width: 52, height: 52); VStack(alignment: .leading, spacing: 3) { Text("CueLevel \(appShortVersion)").font(.system(size: 20, weight: .semibold)); Text("Lossless loudness levelling for event playback").hint() } }
+            HStack(spacing: 14) { LogoMark(tile: true).frame(width: 60, height: 60); VStack(alignment: .leading, spacing: 3) { Text("CueLevel \(appShortVersion)").font(.system(size: 20, weight: .semibold)); Text("Lossless loudness levelling for event playback").hint() } }
             Text("All processing happens on this Mac. CueLevel never uploads your files and collects no data. Originals are never modified.").font(.system(size: 13)).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
             Toggle(isOn: $updater.autoCheck) { Text("Check for updates automatically").font(.system(size: 12.5)).foregroundStyle(Theme.text).frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
             Text("When on, CueLevel reads one small public version file on GitHub at launch and twice a day. Nothing about you or your files is sent.").hint()
             Text("Includes FFmpeg and the RNNoise speech model. Their licences, source locations and build details are in the Third-party notices that ship with CueLevel.").hint()
             HStack { Link("FFmpeg licensing", destination: URL(string: "https://ffmpeg.org/legal.html")!).font(.system(size: 12.5)); Spacer(); Button("Done") { model.showAbout = false }.buttonStyle(CLButton(kind: .primary)).keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 480).background(Theme.panel).preferredColorScheme(.dark)
+    }
+}
+}
+
+// MARK: - Components
+
+/// The signature readout: where the cue is now, where it lands, and the target, on one −40…0 LUFS ruler.
+struct LevelReadout: View {
+    let job: CueJob
+    let analysis: Analysis
+    let target: Double
+    let ceiling: Double
+    let peakLimit: Double?
+    let good: ClosedRange<Double>?
+    var body: some View {
+        let source = analysis.levels.integrated
+        let plan = LosslessPlan(levels: analysis.levels, target: target, ceiling: ceiling, maxLimiting: peakLimit ?? 0)
+        let landed = job.output?.levels.integrated
+        let after = landed ?? (source + plan.gain)
+        let sourceTone = levelTone(source, target: target)
+        let afterTone: LevelTone = levelTone(after, target: target) == .good ? .good : .changed
+        HStack(alignment: .center, spacing: 30) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(lufs(source)).font(.readout(28, weight: .medium)).foregroundStyle(Theme.tone(sourceTone)).monospacedDigit()
+                    Text("Now").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                }
+                Image(systemName: "arrow.right").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.dim)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(lufs(after)).font(.readout(44)).foregroundStyle(Theme.tone(afterTone).opacity(landed == nil ? 0.75 : 1)).monospacedDigit()
+                        Text("LUFS").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.muted)
+                    }
+                    Text(caption(plan: plan, landed: landed)).font(.system(size: 12)).foregroundStyle(Theme.muted)
+                }
+            }.fixedSize()
+            LevelRuler(source: source, after: after, landed: landed != nil, target: target, good: good).frame(height: 62)
+        }.card(padding: 20)
+        .accessibilityElement().accessibilityLabel("Loudness now \(lufs(source)) LUFS, \(landed == nil ? "after levelling" : "levelled") \(lufs(after)) LUFS, target \(lufs(target))")
+    }
+    func caption(plan: LosslessPlan, landed: Double?) -> String {
+        if job.alreadyGood != nil { return "Already good, left as it is" }
+        if let output = job.output, let landed {
+            let gain = output.gainApplied ?? (landed - analysis.levels.integrated)
+            return "Levelled, \(signed(gain)) dB"
+        }
+        if plan.shortfall > 0.05 { return "After levelling, \(signed(plan.gain)) dB (peaks keep it \(String(format: "%.1f", plan.shortfall)) dB under)" }
+        return abs(plan.gain) < 0.05 ? "Already on target" : "After levelling, \(signed(plan.gain)) dB"
+    }
+}
+
+struct LevelRuler: View {
+    let source: Double
+    let after: Double
+    let landed: Bool
+    let target: Double
+    let good: ClosedRange<Double>?
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let x: (Double) -> CGFloat = { CGFloat(Theme.position($0)) * w }
+            ZStack(alignment: .topLeading) {
+                Capsule().fill(Theme.meter).opacity(0.22).frame(width: w, height: 8).offset(y: 24)
+                if let good {
+                    RoundedRectangle(cornerRadius: 5).fill(Theme.good.opacity(0.10))
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.good.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                        .frame(width: max(6, x(good.upperBound) - x(good.lowerBound)), height: 18).offset(x: x(good.lowerBound), y: 19)
+                        .help("Where your good references sit")
+                }
+                Capsule().fill(LinearGradient(colors: [Theme.tone(levelTone(source, target: target)), Theme.good], startPoint: source < after ? .leading : .trailing, endPoint: source < after ? .trailing : .leading))
+                    .frame(width: max(4, abs(x(after) - x(source))), height: 4).offset(x: min(x(source), x(after)), y: 26)
+                Rectangle().fill(Theme.bone).frame(width: 2, height: 38).offset(x: x(target) - 1, y: 9)
+                Text("Target \(lufs(target))").font(.system(size: 11, weight: .semibold)).fixedSize().position(x: x(target), y: 0)
+                dot(Theme.tone(levelTone(source, target: target)), filled: true).offset(x: x(source) - 9, y: 19)
+                dot(Theme.good, filled: landed).offset(x: x(after) - 9, y: 19)
+                ForEach([-40, -30, -20, -10, 0], id: \.self) { v in
+                    Text(lufs(Double(v)).replacingOccurrences(of: ".0", with: "")).font(.system(size: 10.5)).foregroundStyle(Theme.dim).monospacedDigit().fixedSize()
+                        .position(x: min(w - 8, max(8, x(Double(v)))), y: 54)
+                }
+            }
+        }
+    }
+    func dot(_ color: Color, filled: Bool) -> some View {
+        Circle().fill(filled ? color : Theme.base).frame(width: 18, height: 18)
+            .overlay(Circle().stroke(filled ? Theme.base : color, lineWidth: filled ? 3 : 2.5))
+    }
+}
+
+/// A cue's loudness in the list: a dot on a thin track, with the target as a tick.
+struct MiniRuler: View {
+    let source: Double
+    let output: Double?
+    let target: Double
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let x: (Double) -> CGFloat = { CGFloat(Theme.position($0)) * w }
+            let value = output ?? source
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.line).frame(height: 3)
+                if let output { Capsule().fill(Theme.good.opacity(0.35)).frame(width: max(2, abs(x(output) - x(source))), height: 3).offset(x: min(x(source), x(output))) }
+                Rectangle().fill(Theme.bone.opacity(0.55)).frame(width: 1.5, height: 9).offset(x: x(target))
+                Circle().fill(output != nil ? Theme.good : Theme.tone(levelTone(value, target: target))).frame(width: 8, height: 8).offset(x: x(value) - 4)
+            }
+        }
+    }
+}
+
+/// Wraps its children onto new lines (for the source-check pills).
+struct FlowRow: Layout {
+    var spacing: CGFloat = 8
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 800
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0
+        for s in subviews {
+            let size = s.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += line + spacing; line = 0 }
+            x += size.width + spacing; line = max(line, size.height)
+        }
+        return CGSize(width: width, height: y + line)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, line: CGFloat = 0
+        for s in subviews {
+            let size = s.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX { x = bounds.minX; y += line + spacing; line = 0 }
+            s.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing; line = max(line, size.height)
+        }
+    }
+}
+
+/// Waveform with loudness over time, the good range band and (in Original) the edited sections.
+struct Waveform: View {
+    let peaks: [Float]
+    var curve: [Float] = []
+    var target: Double? = nil
+    var good: ClosedRange<Double>? = nil
+    var edits: [GainRegion] = []
+    let position: Double
+    let duration: Double
+    let seek: (Double) -> Void
+    var body: some View {
+        GeometryReader { geometry in
+            Canvas { context, size in
+                let middle = size.height / 2
+                func y(_ value: Double) -> Double { size.height * (1 - (max(-60, min(0, value)) + 60) / 60) }
+                if let good, curve.count > 1 {
+                    let band = CGRect(x: 0, y: y(good.upperBound), width: size.width, height: max(2, y(good.lowerBound) - y(good.upperBound)))
+                    context.fill(Path(band), with: .color(Theme.good.opacity(0.08)))
+                    var edges = Path()
+                    edges.move(to: CGPoint(x: 0, y: band.minY)); edges.addLine(to: CGPoint(x: size.width, y: band.minY))
+                    edges.move(to: CGPoint(x: 0, y: band.maxY)); edges.addLine(to: CGPoint(x: size.width, y: band.maxY))
+                    context.stroke(edges, with: .color(Theme.good.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
+                }
+                if duration > 0 {
+                    for r in edits {
+                        let rect = CGRect(x: r.start / duration * size.width, y: 0, width: max(2, r.length / duration * size.width), height: size.height)
+                        context.fill(Path(rect), with: .color(Theme.changed.opacity(0.07)))
+                        var e = Path(); e.move(to: CGPoint(x: rect.minX, y: 0)); e.addLine(to: CGPoint(x: rect.minX, y: size.height)); e.move(to: CGPoint(x: rect.maxX, y: 0)); e.addLine(to: CGPoint(x: rect.maxX, y: size.height))
+                        context.stroke(e, with: .color(Theme.changed.opacity(0.45)), lineWidth: 1)
+                        if rect.width > 60 {
+                            context.draw(Text(r.muted == true ? "Muted" : signed(r.gain) + " dB").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.changed), at: CGPoint(x: rect.minX + 6, y: 12), anchor: .leading)
+                        }
+                    }
+                }
+                if !peaks.isEmpty {
+                    var wave = Path(), before = Path()
+                    let step = size.width / Double(peaks.count)
+                    for (index, peak) in peaks.enumerated() {
+                        let t = (Double(index) + 0.5) / Double(peaks.count) * duration
+                        let m = edits.isEmpty ? 1 : ClipGain.multiplier(at: t, regions: edits)
+                        let base = max(1, min(1, pow(Double(peak), 0.6)) * (middle - 8))
+                        let height = max(1, min(1, pow(Double(peak) * m, 0.6)) * (middle - 8))
+                        if m != 1 { before.addRect(CGRect(x: Double(index) * step, y: middle - base, width: max(1, step * 0.62), height: base * 2)) }
+                        wave.addRoundedRect(in: CGRect(x: Double(index) * step, y: middle - height, width: max(1, step * 0.62), height: height * 2), cornerSize: CGSize(width: 0.8, height: 0.8))
+                    }
+                    context.fill(before, with: .color(Theme.muted.opacity(0.22)))
+                    context.fill(wave, with: .color(Theme.bone.opacity(0.82)))
+                }
+                if curve.count > 1 {
+                    if let target {
+                        var line = Path(); line.move(to: CGPoint(x: 0, y: y(target))); line.addLine(to: CGPoint(x: size.width, y: y(target)))
+                        context.stroke(line, with: .color(Theme.bone.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    }
+                    // The first ~3 s have no short-term reading yet (shown as the -70 floor); start the line at the first real value.
+                    let first = curve.firstIndex { $0 > -69.9 } ?? 0
+                    var trace = Path()
+                    for index in first..<curve.count {
+                        let point = CGPoint(x: Double(index) / Double(curve.count - 1) * size.width, y: y(Double(curve[index])))
+                        if index == first { trace.move(to: point) } else { trace.addLine(to: point) }
+                    }
+                    context.stroke(trace, with: .color(Theme.changed), style: StrokeStyle(lineWidth: 2, lineJoin: .round))
+                }
+                let x = duration > 0 ? min(1, max(0, position / duration)) * size.width : 0
+                var cursor = Path(); cursor.move(to: CGPoint(x: x, y: 0)); cursor.addLine(to: CGPoint(x: x, y: size.height))
+                context.stroke(cursor, with: .color(Theme.bone), lineWidth: 1.5)
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in if duration > 0 { seek(min(1, max(0, value.location.x / geometry.size.width)) * duration) } })
+            .overlay { if peaks.isEmpty { Text("Measure the cue to draw its waveform").hint() } }
+        }.frame(height: 230)
+        .accessibilityLabel("Waveform with loudness over time. Use the playback position slider to seek.")
     }
 }
 
@@ -1029,45 +782,6 @@ struct WindowChrome: NSViewRepresentable {
             guard let button = window.standardWindowButton(type) else { continue }
             button.setFrameOrigin(NSPoint(x: 18 + CGFloat(index) * 20, y: (barHeight - button.frame.height) / 2))
         }
-    }
-}
-
-/// Queue status in a few words; a cue left below target shows by how much.
-struct StateBadge: View {
-    let job: CueJob
-    let target: Double
-    var body: some View {
-        let (text, color): (String, Color) = {
-            switch job.status {
-            case .working: return ("\(Int(job.progress * 100))%", Theme.bone)
-            case .ready: return job.alreadyGood != nil ? ("Already good", Theme.lime) : ("Ready", Theme.teal)
-            case .review:
-                if let short = job.output?.shortfall, short > 0.05 { return (String(format: "%.1f under", short), Theme.amber) }
-                return ("Check notes", Theme.amber)
-            case .failed: return ("Failed", Theme.coral)
-            case .cancelled: return ("Stopped", Theme.muted)
-            case .analyzed: return ("Measured", Theme.muted)
-            case .queued: return ("Waiting", Theme.muted)
-            }
-        }()
-        Text(text).font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(color)
-            .padding(.horizontal, 7).padding(.vertical, 2).background(RoundedRectangle(cornerRadius: 5).fill(color.opacity(0.12)))
-    }
-}
-
-/// The CueLevel mark drawn natively: meter arc, three levelled bars, cue dot.
-struct LogoMark: View {
-    var body: some View {
-        Canvas { context, size in
-            let s = min(size.width, size.height) / 64
-            let center = CGPoint(x: 32 * s, y: 32 * s)
-            var arc = Path()
-            arc.addArc(center: center, radius: 21 * s, startAngle: .degrees(-38), endAngle: .degrees(38), clockwise: true)
-            context.stroke(arc, with: .linearGradient(Gradient(colors: [Theme.amber, Theme.lime, Theme.teal]), startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height)),
-                           style: StrokeStyle(lineWidth: 9 * s, lineCap: .round))
-            context.fill(Path(ellipseIn: CGRect(x: 49 * s, y: 28 * s, width: 8 * s, height: 8 * s)), with: .color(Theme.bone))
-            for x in [24.0, 30.0, 36.0] { context.fill(Path(roundedRect: CGRect(x: x * s, y: 25 * s, width: 3.6 * s, height: 14 * s), cornerRadius: 1.8 * s), with: .color(Theme.bone)) }
-        }.accessibilityHidden(true)
     }
 }
 
@@ -1114,7 +828,7 @@ struct LogoMark: View {
                     Button("About CueLevel") { model.showAbout = true }
                     Button("Check for Updates…") { Task { await updater.check(userInitiated: true) } }.disabled(!updater.canCheck)
                 }
-                CommandGroup(after: .newItem) { Button("Add Files…") { model.addFiles() }.keyboardShortcut("o") }
+                CommandGroup(after: .newItem) { Button("Add Cues…") { model.addFiles() }.keyboardShortcut("o") }
                 CommandGroup(replacing: .help) { Button("Keyboard Shortcuts") { model.showShortcuts = true }.keyboardShortcut("/", modifiers: .command) }
                 CommandGroup(replacing: .undoRedo) {
                     Button("Undo") { if model.clipEditing { model.undoRegions() } else { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) } }.keyboardShortcut("z")
@@ -1125,48 +839,12 @@ struct LogoMark: View {
 }
 
 
-/// Live loudness while playing: momentary and short-term LUFS (bar with target mark) and sample peak.
-struct LoudnessMeterBar: View {
-    let reading: (momentary: Double?, shortTerm: Double?, peak: Double?)
-    let target: Double
-    let ready: Bool
-    var body: some View {
-        HStack(spacing: 12) {
-            GeometryReader { geometry in
-                let w = geometry.size.width
-                let x: (Double) -> CGFloat = { v in CGFloat((min(0, max(-40, v)) + 40) / 40) * w }
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3).fill(Theme.field)
-                    if let m = reading.momentary {
-                        RoundedRectangle(cornerRadius: 3).fill(LinearGradient(colors: [Theme.teal, Theme.lime, Theme.amber], startPoint: .leading, endPoint: .trailing))
-                            .frame(width: max(2, x(m)))
-                    }
-                    if let s = reading.shortTerm { Rectangle().fill(Theme.bone).frame(width: 2).offset(x: x(s) - 1) }
-                    Rectangle().fill(Theme.coral).frame(width: 1.5).offset(x: x(target))
-                }
-            }.frame(height: 8)
-            meterValue("M", reading.momentary, "LUFS")
-            meterValue("S", reading.shortTerm, "LUFS")
-            meterValue("Peak", reading.peak, "dBFS", warn: (reading.peak ?? -100) > -1)
-        }
-        .font(.system(size: 11.5)).foregroundStyle(Theme.muted)
-        .opacity(ready ? 1 : 0.4)
-        .help("Live loudness of what's playing: M = momentary (0.4 s), S = short-term (3 s), red mark = target. Peak is the sample peak.")
-    }
-    func meterValue(_ label: String, _ value: Double?, _ unit: String, warn: Bool = false) -> some View {
-        HStack(spacing: 3) {
-            Text(label)
-            Text(value.map { lufs($0) } ?? "—").font(.system(size: 12, weight: .semibold)).monospacedDigit().foregroundStyle(warn ? Theme.coral : Theme.bone).frame(minWidth: 38, alignment: .trailing)
-            Text(unit)
-        }
-    }
-}
 
 /// Keyboard shortcuts, laid out like a cheat sheet for training.
 struct ShortcutSheet: View {
     let close: () -> Void
     let groups: [(String, [(String, String)])] = [
-        ("Playback", [("Space", "Play / pause"), ("P", "Play section or in–out range with pre/post-roll"), ("L", "Loop on / off")]),
+        ("Playback", [("Space", "Play / pause"), ("⌘L", "Level the selected cue"), ("⌘E", "Switch between Prepare and Edit"), ("P", "Play section or in–out range with pre/post-roll"), ("L", "Loop on / off")]),
         ("Clip gain editor", [("Drag across", "Mark a section"), ("Drag up / down", "Change a section's level"), ("↑ / ↓", "Nudge 0.5 dB"), ("⇧↑ / ⇧↓", "Nudge 3 dB"), ("M", "Mute the selected section"), ("Return", "Add a marker at the playhead")]),
         ("Cue edges", [("I", "Set in point at the playhead"), ("O", "Set out point at the playhead"), ("Drag IN / OUT", "Move the in or out point on the ruler")]),
         ("View", [("T / R", "Zoom in / out"), ("⌥-scroll or pinch", "Zoom around the pointer"), ("Scroll", "Move along the cue when zoomed")]),
@@ -1180,7 +858,7 @@ struct ShortcutSheet: View {
                     VStack(alignment: .leading, spacing: 14) {
                         ForEach(Array(groups.enumerated()).filter { $0.offset % 2 == column }.map(\.element), id: \.0) { group in
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(group.0.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.muted)
+                                Text(group.0).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.muted)
                                 ForEach(group.1, id: \.0) { item in
                                     HStack(spacing: 10) {
                                         Text(item.0).font(.system(size: 11.5, weight: .semibold, design: .rounded)).foregroundStyle(Theme.bone)

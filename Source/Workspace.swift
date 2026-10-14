@@ -70,9 +70,9 @@ struct ExportReport: Codable {
     @Published var selection: UUID? { didSet { selectedRegion = nil; loadPlayer() } }
     @Published var settings = Workspace.venueDefaults { didSet { persist() } }
     /// New sessions start at the live-venue standard: −18 LUFS, −1 dBTP.
-    static var venueDefaults: ProcessingSettings { var s = ProcessingSettings(); s.target = -18; s.peak = -1; return s }
+    static var venueDefaults: ProcessingSettings { var s = ProcessingSettings(); s.target = -18; s.peak = -1; s.format = .lossless; return s }
     /// Bumped when a default changes; older sessions are migrated once on load.
-    static let settingsRevision = 2
+    static let settingsRevision = 3
     @Published var presets: [SavedPreset] = []
     @Published var busy = false
     @Published var workingID: UUID?
@@ -158,6 +158,8 @@ struct ExportReport: Codable {
             if (saved.settingsRevision ?? 1) < Self.settingsRevision, settings.target == -23 {
                 settings.target = -18; if settings.peak == -2 { settings.peak = -1 }
             }
+            // 2.0: levelling is lossless by default (one exact gain change). Sessions on the old automatic file type move once.
+            if (saved.settingsRevision ?? 1) < 3, settings.format == .automatic { settings.format = .lossless }
             for i in presets.indices { presets[i].settings.cut = max(2, presets[i].settings.cut) }
             for i in jobs.indices {
                 if jobs[i].status == .working { jobs[i].status = .queued; jobs[i].message = "Interrupted — ready to retry"; jobs[i].progress = 0 }
@@ -217,7 +219,8 @@ struct ExportReport: Codable {
     /// Quick Level one cue from the inspector: lossless gain (plus Even out when on), then show the Levelled version.
     /// Saved into the Quick Level folder when one is chosen; otherwise use Export.
     func quickLevelSelected() { guard let id = selection else { return }; run(ids: [id], render: true, quickOverride: true) }
-    func quickLevelAll() { run(ids: jobs.map(\.id), render: true, quickOverride: true) }
+    /// Levels every cue that isn't done yet (2.0: "Level all" skips cues already levelled or already good).
+    func quickLevelAll() { run(ids: jobs.filter { !CueStage($0).isDone || $0.output == nil }.map(\.id), render: true, quickOverride: true) }
     private func run(ids: [UUID], render: Bool, quickOverride: Bool = false) {
         guard !busy, !ids.isEmpty else { return }
         busy = true; player.pause(); playing = false
