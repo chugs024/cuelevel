@@ -243,12 +243,17 @@ extension ClipGain {
         return "min(1," + terms.joined(separator: "+") + ")"
     }
     /// Section effects as a cross-fade between the dry signal and a filtered copy, so they switch in and out without clicks.
-    static func effectsFilter(_ regions: [GainRegion]?) -> String? {
+    /// `channels` and `layout` (FFmpeg's layout name, e.g. "5.1(side)") describe the audio, so the mix keeps its layout.
+    static func effectsFilter(_ regions: [GainRegion]?, channels: Int = 2, layout: String? = nil) -> String? {
         let list = (regions ?? []).filter { $0.length > 0 }
         var stages: [String] = []
         func stage(_ tag: String, _ effect: String, _ group: [GainRegion]) -> String {
             let w = weightExpression(group).replacingOccurrences(of: "T", with: "(n/s)")
-            return "asplit=2[\(tag)d][\(tag)w];[\(tag)w]\(effect)[\(tag)x];[\(tag)d][\(tag)x]amerge=inputs=2,aeval=exprs='val(0)*(1-\(w))+val(2)*\(w)|val(1)*(1-\(w))+val(3)*\(w)':c=stereo"
+            // amerge puts the dry channels first, then the wet ones; mix each dry channel with its wet copy.
+            let n = max(1, channels)
+            let exprs = (0..<n).map { "val(\($0))*(1-\(w))+val(\(n + $0))*\(w)" }.joined(separator: "|")
+            let out = n == 1 ? "mono" : n == 2 ? "stereo" : (layout ?? "\(n)c")
+            return "asplit=2[\(tag)d][\(tag)w];[\(tag)w]\(effect)[\(tag)x];[\(tag)d][\(tag)x]amerge=inputs=2,aeval=exprs='\(exprs)':c=\(out)"
         }
         let lowCut = list.filter { ($0.lowCut ?? 0) > 0 }
         if let f = lowCut.compactMap(\.lowCut).max() { stages.append(stage("lc", "highpass=f=\(Int(f)):p=2", lowCut)) }

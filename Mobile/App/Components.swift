@@ -214,7 +214,7 @@ struct CheckPill: View {
 /// The source checks, in a word each: what's fine is green, what deserves attention is amber.
 func checkPills(_ a: Analysis) -> [(String, Bool)] {
     var list: [(String, Bool)] = []
-    let clip = a.info.channels == 1 ? -3.11 : -0.1
+    let clip = -0.1
     let clipping = ((a.levels.samplePeak ?? -100) >= clip && (a.levels.peakCount ?? 0) >= 4) || a.levels.truePeak > 0.05
     list.append(clipping ? ("Probable clipping", false) : ("No clipping", true))
     list.append(abs(a.levels.dcOffset ?? 0) >= 0.001 ? ("DC offset", false) : ("No DC offset", true))
@@ -225,6 +225,6 @@ func checkPills(_ a: Analysis) -> [(String, Bool)] {
     }
     if let s = a.stereo, s.headSilence >= 2 { list.append(("\(String(format: "%.1f", s.headSilence)) s silent at start", false)) }
     if let s = a.stereo, s.tailSilence >= 2 { list.append(("\(String(format: "%.1f", s.tailSilence)) s silent at end", false)) }
-    if a.info.channels > 2 { list.append(("Surround, folded to stereo", false)) }
+    if a.info.channels > 2 { list.append(a.foldedToStereo == true ? ("Surround, folded to stereo", false) : ("All \(a.info.channels) channels kept", true)) }
     return list
 }

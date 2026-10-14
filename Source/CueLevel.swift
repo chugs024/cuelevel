@@ -345,7 +345,7 @@ struct ContentView: View {
             if f.contains("identical") { return "Mono in a stereo file" }
             if f.contains("at the start") { return f.components(separatedBy: " of silence").first.map { "\($0) silence at the start" } ?? "Silence at the start" }
             if f.contains("at the end") { return f.components(separatedBy: " of silence").first.map { "\($0) silence at the end" } ?? "Silence at the end" }
-            if f.contains("Surround") { return "Surround, will be downmixed" }
+            if f.contains("Surround") { return "Surround, folded to stereo" }
             if f.contains("audio tracks") { return f.components(separatedBy: ".").first ?? "Several audio tracks" }
             return f
         }

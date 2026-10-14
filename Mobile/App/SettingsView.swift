@@ -31,6 +31,13 @@ struct SettingsView: View {
                     Text("Each cue's content type and plan can be changed on its own page. Music is never evened out.")
                 }
                 Section {
+                    Toggle("Fold surround to stereo", isOn: $store.settings.foldsSurround)
+                } header: { Text("Channels") } footer: {
+                    Text(store.settings.foldsSurround
+                         ? "Surround files (5.1, 7.1) are folded down to stereo for a stereo PA. Folding mixes the channels together, so those copies aren't lossless. Mono and stereo files are unchanged."
+                         : "Every levelled copy has the same channels as the file you added: mono stays mono, 5.1 stays 5.1. Turn this on only if your PA plays stereo and you want surround files folded down.")
+                }
+                Section {
                     row("Saved to", "Files › CueLevel › Levelled")
                     Button("Remove all levelled copies", role: .destructive) { confirmClear = true }.disabled(store.levelledURLs.isEmpty)
                 } header: { Text("Levelled files") } footer: {

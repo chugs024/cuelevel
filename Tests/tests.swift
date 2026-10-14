@@ -218,6 +218,22 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         let surroundInfo = try AudioEngine.inspect(surround, token: Cancellation())
         check(surroundInfo.channels == 6 && surroundInfo.sampleRate == 44100 && surroundInfo.audioStreams == 1, "5.1 accepted: \(surroundInfo.channels) ch")
         check(AudioEngine.channelCount("Audio: aac (LC), 48000 Hz, 5.1(side), fltp") == 6 && AudioEngine.channelCount("Audio: pcm_s24le, 48000 Hz, 3 channels, s32") == 3 && AudioEngine.channelCount("Audio: aac, 48000 Hz, stereo, fltp") == 2, "layout parsing")
+        // 2.1: the levelled copy keeps the source's channels; Fold surround to stereo folds them when asked.
+        let surroundAnalysis = try AudioEngine.analyze(surround, token: Cancellation()) { _, _ in }
+        check(surroundAnalysis.channelsMeasured == 6 && surroundAnalysis.foldedToStereo == nil, "5.1 measured on all channels")
+        let keptOut = try AudioEngine.process(surround, analysis: surroundAnalysis, settings: lossless, directory: area.appendingPathComponent("render-51"), token: Cancellation()) { _, _ in }
+        let keptInfo = try AudioEngine.inspect(keptOut.url, token: Cancellation())
+        check(keptInfo.channels == 6 && keptInfo.audioDescription.contains("5.1"), "5.1 stays 5.1: \(keptInfo.audioDescription)")
+        check(abs(keptOut.levels.integrated - (lossless.target - (keptOut.shortfall ?? 0))) < 0.5 && !keptOut.warnings.contains { $0.contains("Folded") }, "5.1 levelled to target, all channels: \(keptOut.levels.integrated) \(keptOut.warnings)")
+        var foldSettings = lossless; foldSettings.foldToStereo = true
+        let foldAnalysis = try AudioEngine.analyze(surround, foldSurround: true, token: Cancellation()) { _, _ in }
+        let foldOut = try AudioEngine.process(surround, analysis: foldAnalysis, settings: foldSettings, directory: area.appendingPathComponent("render-51f"), token: Cancellation()) { _, _ in }
+        check(try AudioEngine.inspect(foldOut.url, token: Cancellation()).channels == 2 && foldOut.warnings.contains { $0.contains("Folded") }, "folds to stereo when asked")
+        let monoSource = try make("mono.wav", ["-f","lavfi","-i","sine=frequency=440:duration=4","-af","volume=-20dB","-c:a","pcm_s16le"])
+        let monoAnalysis = try AudioEngine.analyze(monoSource, token: Cancellation()) { _, _ in }
+        let monoOut = try AudioEngine.process(monoSource, analysis: monoAnalysis, settings: lossless, directory: area.appendingPathComponent("render-mono"), token: Cancellation()) { _, _ in }
+        check(try AudioEngine.inspect(monoOut.url, token: Cancellation()).channels == 1, "mono stays mono")
+        print("PASS: levelled copies keep their channels; fold to stereo on request")
         let multi = try make("multi.mp4", ["-f","lavfi","-i","testsrc2=s=320x240:r=25:d=3","-f","lavfi","-i","sine=frequency=440:duration=3","-f","lavfi","-i","sine=frequency=880:duration=3","-f","lavfi","-i","sine=frequency=660:duration=3","-map","0","-map","1","-map","2","-map","3","-c:v","mpeg4","-c:a","aac"])
         let multiAnalysis = try AudioEngine.analyze(multi, token: Cancellation()) { _, _ in }
         check(multiAnalysis.info.audioStreams == 3 && multiAnalysis.sourceFindings.contains { $0.contains("3 audio tracks") }, "multi-track described")

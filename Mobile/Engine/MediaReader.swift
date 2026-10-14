@@ -2,22 +2,31 @@ import Foundation
 import AVFoundation
 
 // Reads the first audio track of any file AVFoundation can open (WAV, AIFF, CAF, MP3, AAC/M4A, ALAC, FLAC, MOV, MP4, M4V)
-// as stereo 32-bit float at its own sample rate. Mono becomes dual mono at −3 dB and surround is downmixed to stereo,
-// matching what CueLevel's FFmpeg engine measures on the Mac (aformat=channel_layouts=stereo).
+// as 32-bit float at its own sample rate, one array per channel. The channels stay as they are in the source: mono stays
+// mono and surround stays surround. Only when `foldSurround` is on is a surround source folded down to stereo.
 
 struct OpenedMedia {
     var asset: AVURLAsset
     var audioTrack: AVAssetTrack
     var info: MediaInfo
-    /// Channels in the decoded stream before the stereo conversion.
+    /// Channels in the source track.
     var sourceChannels: Int
     var sampleRate: Double
     /// True when the source's PCM is floating point (the lossless output then stays float).
     var isFloat: Bool
+    /// The channels CueLevel decodes, measures and writes (the source's, or stereo when folded).
+    var map: ChannelMap
+    /// The source track's own channel layout, passed to the decoder so the channel order is known.
+    var sourceLayout: Data?
+    /// True when a surround source is folded down to stereo.
+    var folded: Bool
+    /// The source's layout in a word ("5.1", "stereo").
+    var sourceName: String
+    var channels: Int { map.count }
 }
 
 enum MediaReader {
-    static func open(_ url: URL) async throws -> OpenedMedia {
+    static func open(_ url: URL, foldSurround: Bool = false) async throws -> OpenedMedia {
         guard FileManager.default.isReadableFile(atPath: url.path) else { throw cueError("Source file unavailable. Add the file again.") }
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let bytes = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
@@ -46,7 +55,7 @@ enum MediaReader {
         let seconds = CMTimeGetSeconds(duration)
         guard seconds.isFinite, seconds > 0 else { throw cueError("The file has no playable duration.") }
         let codec = codecName(asbd)
-        let layout = channels == 1 ? "mono" : channels == 2 ? "stereo" : "\(channels) channels"
+        let layout = ChannelMap.of(format, channels: channels).name
         var videoCodec: String? = nil
         if let v = video.first, let f = try await v.load(.formatDescriptions).first {
             let fourCC = CMFormatDescriptionGetMediaSubType(f)
@@ -57,7 +66,10 @@ enum MediaReader {
                              modified: (attributes?[.modificationDate] as? Date) ?? .distantPast, hasOtherStreams: !text.isEmpty,
                              videoCodec: videoCodec, audioStreams: audio.count, sampleRate: Int(asbd.mSampleRate))
         let isFloat = asbd.mFormatID == kAudioFormatLinearPCM && (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
-        return OpenedMedia(asset: asset, audioTrack: track, info: info, sourceChannels: channels, sampleRate: asbd.mSampleRate, isFloat: isFloat)
+        let fold = foldSurround && channels > 2
+        let map = fold ? ChannelMap.stereo : ChannelMap.of(format, channels: channels)
+        return OpenedMedia(asset: asset, audioTrack: track, info: info, sourceChannels: channels, sampleRate: asbd.mSampleRate, isFloat: isFloat,
+                           map: map, sourceLayout: ChannelMap.layoutData(format), folded: fold, sourceName: layout)
     }
 
     static func codecName(_ d: AudioStreamBasicDescription) -> String {
@@ -90,27 +102,30 @@ enum MediaReader {
         return String(bytes: bytes, encoding: .ascii)?.trimmingCharacters(in: .whitespaces) ?? "audio"
     }
 
-    /// Output settings that decode the track to interleaved 32-bit float. Surround is folded to stereo by AVFoundation;
-    /// mono and stereo stay as they are (mono is converted below at −3 dB per side).
-    static func decodeSettings(sourceChannels: Int) -> [String: Any] {
+    /// Output settings that decode the track to interleaved 32-bit float, keeping the source's channels and their order
+    /// (or folding surround to stereo when asked).
+    static func decodeSettings(_ media: OpenedMedia) -> [String: Any] {
         var s: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
                                 AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
-        if sourceChannels > 2 {
+        if media.folded {
             s[AVNumberOfChannelsKey] = 2
             var layout = AudioChannelLayout(); layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
             s[AVChannelLayoutKey] = Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
+        } else if media.sourceChannels > 2, let layout = media.sourceLayout {
+            s[AVNumberOfChannelsKey] = media.sourceChannels
+            s[AVChannelLayoutKey] = layout
         }
         return s
     }
 
-    /// Splits one decoded sample buffer into stereo left/right arrays.
-    static func stereo(from buffer: CMSampleBuffer) -> (left: [Float], right: [Float])? {
+    /// Splits one decoded, interleaved sample buffer into one array per channel.
+    static func planar(from buffer: CMSampleBuffer) -> [[Float]]? {
         guard let format = CMSampleBufferGetFormatDescription(buffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
               let block = CMSampleBufferGetDataBuffer(buffer) else { return nil }
         let frames = CMSampleBufferGetNumSamples(buffer)
         let channels = Int(asbd.mChannelsPerFrame)
-        guard frames > 0, channels > 0 else { return ([], []) }
+        guard frames > 0, channels > 0 else { return Array(repeating: [], count: max(1, channels)) }
         var length = 0; var pointer: UnsafeMutablePointer<CChar>?
         var contiguous = block
         if !CMBlockBufferIsRangeContiguous(block, atOffset: 0, length: 0) {
@@ -120,24 +135,23 @@ enum MediaReader {
         }
         guard CMBlockBufferGetDataPointer(contiguous, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &pointer) == noErr, let pointer else { return nil }
         let available = min(frames, length / (4 * channels))
-        var left = [Float](repeating: 0, count: available), right = [Float](repeating: 0, count: available)
+        var out = [[Float]](repeating: [Float](repeating: 0, count: available), count: channels)
         pointer.withMemoryRebound(to: Float.self, capacity: available * channels) { p in
-            if channels == 1 {
-                let k: Float = 0.70710677
-                for i in 0..<available { let v = p[i] * k; left[i] = v; right[i] = v }
-            } else {
-                for i in 0..<available { left[i] = p[i * channels]; right[i] = p[i * channels + 1] }
+            for c in 0..<channels {
+                out[c].withUnsafeMutableBufferPointer { dst in
+                    for i in 0..<available { dst[i] = p[i * channels + c] }
+                }
             }
         }
-        return (left, right)
+        return out
     }
 
-    /// Decodes the whole first audio track, calling `body` with each chunk (left, right, frames, presentation time).
+    /// Decodes the whole first audio track, calling `body` with each chunk (one array per channel, presentation time).
     static func decode(_ media: OpenedMedia, isCancelled: () -> Bool = { false },
-                       body: (UnsafePointer<Float>, UnsafePointer<Float>, Int, CMTime) throws -> Void) throws {
+                       body: ([[Float]], CMTime) throws -> Void) throws {
         let reader: AVAssetReader
         do { reader = try AVAssetReader(asset: media.asset) } catch { throw cueError("CueLevel can't read this file. It may be damaged, incomplete, or not audio or video.") }
-        let output = AVAssetReaderTrackOutput(track: media.audioTrack, outputSettings: decodeSettings(sourceChannels: media.sourceChannels))
+        let output = AVAssetReaderTrackOutput(track: media.audioTrack, outputSettings: decodeSettings(media))
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw cueError("CueLevel can't decode this file's audio.") }
         reader.add(output)
@@ -145,10 +159,9 @@ enum MediaReader {
         defer { if reader.status == .reading { reader.cancelReading() } }
         while let buffer = output.copyNextSampleBuffer() {
             if isCancelled() { throw CancellationError() }
-            guard let pair = stereo(from: buffer), !pair.left.isEmpty else { continue }
-            let l = pair.left, r = pair.right
-            let time = CMSampleBufferGetPresentationTimeStamp(buffer)
-            try l.withUnsafeBufferPointer { lp in try r.withUnsafeBufferPointer { rp in try body(lp.baseAddress!, rp.baseAddress!, l.count, time) } }
+            guard let chunk = planar(from: buffer), let first = chunk.first, !first.isEmpty else { continue }
+            guard chunk.count == media.channels else { throw cueError("CueLevel couldn't keep this file's \(media.map.name) channels apart. Turn on Fold surround to stereo in Settings, or export the mix again.") }
+            try body(chunk, CMSampleBufferGetPresentationTimeStamp(buffer))
         }
         if reader.status == .failed { throw cueError("The audio could not be decoded completely. The file may be damaged.") }
     }

@@ -163,6 +163,13 @@ enum AudioEngine {
         let videoCodec = pictures.first.flatMap { $0.components(separatedBy: "Video: ").last?.split(whereSeparator: { $0 == " " || $0 == "," }).first.map(String.init) }
         return MediaInfo(duration: duration, isVideo: !pictures.isEmpty, audioDescription: audio[0].components(separatedBy: "Audio:").last?.trimmingCharacters(in: .whitespaces) ?? "Audio", channels: channels, byteCount: size, modified: modified, hasOtherStreams: streams.contains { $0.contains("Subtitle:") || $0.contains("Data:") || $0.contains("Attachment:") }, videoCodec: videoCodec, audioStreams: audio.count, sampleRate: rate)
     }
+    /// FFmpeg's channel layout name from a stream description ("pcm_s24le, 48000 Hz, 5.1(side), s32" → "5.1(side)").
+    static func layoutName(_ description: String) -> String? {
+        let parts = description.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count >= 3, let i = parts.firstIndex(where: { $0.hasSuffix(" Hz") }), parts.indices.contains(i + 1) else { return nil }
+        let name = parts[i + 1]
+        return name.contains("channels") || name.isEmpty ? nil : name
+    }
     /// Channel count from an FFmpeg stream line: mono, stereo, standard surround layouts, or "N channels".
     static func channelCount(_ line: String) -> Int {
         let layouts: [(String, Int)] = [("mono", 1), ("stereo", 2), ("2.1", 3), ("3.0", 3), ("quad", 4), ("4.0", 4), ("4.1", 5), ("5.0", 5), ("5.1", 6), ("6.0", 6), ("6.1", 7), ("7.0", 7), ("7.1", 8), ("hexagonal", 6), ("octagonal", 8)]
@@ -170,8 +177,12 @@ enum AudioEngine {
         if let range = line.range(of: #"(\d+) channels"#, options: .regularExpression), let n = Int(line[range].split(separator: " ")[0]) { return n }
         return 0
     }
-    static func measure(_ input: URL, token: Cancellation, duration: Double, filters: String = "anull", normalizer: String = "loudnorm=I=-23", progress: @escaping @Sendable (Double) -> Void = { _ in }) throws -> Measurement {
-        let log = try run(["-i", input.path, "-map", "0:a:0", "-vn", "-ac", "2", "-af", "aformat=channel_layouts=stereo,\(filters),\(Measurement.statsFilter),\(normalizer):print_format=json", "-f", "null", "-"], token: token, duration: duration, progress: progress)
+    /// Loudness and peaks. `keepChannels` (2.1) measures the file's own channels as BS.1770 defines (surround weighted,
+    /// LFE left out); otherwise the audio is measured as stereo, as processed output is.
+    static func measure(_ input: URL, token: Cancellation, duration: Double, filters: String = "anull", normalizer: String = "loudnorm=I=-23", keepChannels: Bool = false, progress: @escaping @Sendable (Double) -> Void = { _ in }) throws -> Measurement {
+        let layout = keepChannels ? [] : ["-ac", "2"]
+        let chain = (keepChannels ? "" : "aformat=channel_layouts=stereo,") + "\(filters),\(Measurement.statsFilter),\(normalizer):print_format=json"
+        let log = try run(["-i", input.path, "-map", "0:a:0", "-vn"] + layout + ["-af", chain, "-f", "null", "-"], token: token, duration: duration, progress: progress)
         return try Measurement.parse(log)
     }
     static func waveform(_ input: URL, duration: Double, token: Cancellation) throws -> [Float] {
@@ -223,17 +234,19 @@ enum AudioEngine {
         let curve = try momentaryLoudness(input, duration: info.duration, token: token)
         return ClipGain.gapRegions(momentary: curve.map(Double.init), duration: info.duration, depth: depth)
     }
-    static func analyze(_ input: URL, token: Cancellation, progress: @escaping @Sendable (Double, String) -> Void) throws -> Analysis {
+    static func analyze(_ input: URL, foldSurround: Bool = false, token: Cancellation, progress: @escaping @Sendable (Double, String) -> Void) throws -> Analysis {
         progress(0, "Inspecting file")
         let info = try inspect(input, token: token)
         progress(0.02, "Measuring loudness")
-        let levels = try measure(input, token: token, duration: info.duration) { progress(0.02 + $0 * 0.6, "Measuring loudness") }
+        let fold = foldSurround && info.channels > 2
+        let levels = try measure(input, token: token, duration: info.duration, keepChannels: !fold) { progress(0.02 + $0 * 0.6, "Measuring loudness") }
         progress(0.62, "Building waveform")
         let wave = try waveformData(input, duration: info.duration, token: token)
         progress(0.78, "Tracing loudness over time")
         let curve = try loudnessCurve(input, duration: info.duration, token: token) { progress(0.78 + $0 * 0.22, "Tracing loudness over time") }
         progress(1, "Analysis complete")
-        return Analysis(info: info, levels: levels, waveform: wave.peaks, sampleCount: wave.sampleIndex, stereo: wave.stats, loudnessCurve: curve)
+        return Analysis(info: info, levels: levels, waveform: wave.peaks, sampleCount: wave.sampleIndex, stereo: wave.stats, loudnessCurve: curve,
+                        foldedToStereo: fold ? true : nil, channelsMeasured: fold ? 2 : info.channels)
     }
     static func process(_ input: URL, analysis: Analysis, settings: ProcessingSettings, directory: URL, token: Cancellation,
                         progress: @escaping @Sendable (Double, String) -> Void) throws -> ProcessedAudio {
@@ -343,25 +356,29 @@ enum AudioEngine {
         let free = (try? FileManager.default.attributesOfFileSystem(forPath: directory.path)[.systemFreeSize] as? NSNumber)?.int64Value ?? Int64.max
         let estimate = Int64(info.duration * 96000 * 8) + (info.isVideo ? info.byteCount : 0) + 200_000_000
         guard free > estimate else { throw cueError("Not enough free space for processing. Free up approximately \(ByteCountFormatter.string(fromByteCount: estimate, countStyle: .file)) on the Mac's internal drive.") }
+        // 2.1: the source's channels are kept (mono stays mono, 5.1 stays 5.1) unless Fold surround to stereo is on.
+        let fold = settings.foldsSurround && info.channels > 2
+        let layoutFilter = fold ? "aformat=channel_layouts=stereo," : ""
         // Clip gain changes the cue's loudness and peaks, so measure the edited signal before planning the gain.
-        let clipFilter = settings.editFilters(duration: info.duration, sampleRate: info.sampleRate ?? 48000, canCut: !info.isVideo)
+        let clipFilter = settings.editFilters(duration: info.duration, sampleRate: info.sampleRate ?? 48000, canCut: !info.isVideo, channels: fold ? 2 : info.channels,
+                                               layout: fold ? "stereo" : Self.layoutName(info.audioDescription))
         // 2.0.1: clip gain is rendered once to a float intermediate, which is then measured and levelled. The per-sample
         // gain expression is the slow part, and it used to run twice (measure, then render).
         var clipped: URL? = nil
         let sourceLevels: Measurement
         if let filter = clipFilter {
             let temp = directory.appendingPathComponent("clip-gain-\(UUID().uuidString).wav")
-            try run(["-i", input.path, "-map", "0:a:0", "-vn", "-af", "aformat=channel_layouts=stereo,\(filter)", "-c:a", "pcm_f32le", "-rf64", "auto", "-n", temp.path],
+            try run(["-i", input.path, "-map", "0:a:0", "-vn", "-af", "\(layoutFilter)\(filter)", "-c:a", "pcm_f32le", "-rf64", "auto", "-n", temp.path],
                     token: token, duration: info.duration) { progress($0 * 0.15, "Applying clip gain") }
             clipped = temp
-            sourceLevels = try measure(temp, token: token, duration: info.duration) { progress(0.15 + $0 * 0.05, "Measuring clip gain edits") }
+            sourceLevels = try measure(temp, token: token, duration: info.duration, keepChannels: true) { progress(0.15 + $0 * 0.05, "Measuring clip gain edits") }
         } else { sourceLevels = analysis.levels }
         defer { if let clipped { try? FileManager.default.removeItem(at: clipped) } }
         let plan = LosslessPlan(levels: sourceLevels, target: settings.target, ceiling: settings.peak, maxLimiting: settings.peakLimit ?? 0)
         guard plan.gain.isFinite, abs(plan.gain) < 60 else { throw cueError("The soundtrack is silent or too quiet to level reliably.") }
         let output = directory.appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_CueLevel." + ext)
         let sampleFormat = info.audioDescription.hasPrefix("pcm_f") ? "pcm_f32le" : "pcm_s24le"
-        var chain = (clipped == nil ? "aformat=channel_layouts=stereo," : "") + "volume=" + String(format: "%.4f", plan.gain) + "dB:precision=double"
+        var chain = (clipped == nil ? layoutFilter : "") + "volume=" + String(format: "%.4f", plan.gain) + "dB:precision=double"
         if plan.limiting > 0.05 {
             // Only when the user allowed limiting: 4x oversampled look-ahead limiter (approximates true peak), then back to the source rate.
             let limit = pow(10, (settings.peak - 0.3) / 20)
@@ -382,7 +399,7 @@ enum AudioEngine {
         do {
             let base = clipFilter == nil ? 0.0 : 0.2
             try run(args, token: token, duration: info.duration) { progress(base + $0 * (0.6 - base), "Writing lossless copy") }
-            let levels = try measure(output, token: token, duration: info.duration) { progress(0.6 + $0 * 0.3, "Verifying output") }
+            let levels = try measure(output, token: token, duration: info.duration, keepChannels: true) { progress(0.6 + $0 * 0.3, "Verifying output") }
             progress(0.92, "Building output waveform")
             let wave = try waveform(output, duration: info.duration, token: token)
             func f(_ v: Double) -> String { String(format: "%.1f", v) }
@@ -400,7 +417,7 @@ enum AudioEngine {
             if levels.truePeak > settings.peak + 0.2 { warnings.append("Output true peak \(f(levels.truePeak)) dBTP is above the \(f(settings.peak)) dBTP ceiling. Review before use.") }
             if analysis.levels.truePeak >= 0 { warnings.append("Source reaches full scale. Existing distortion may remain.") }
             if clipFilter != nil, sourceLevels.truePeak > 0 { warnings.append("Clip gain pushed peaks over full scale (\(f(sourceLevels.truePeak)) dBTP) before levelling. The levelling gain brings them back down; lower the boosted sections if the output still sounds harsh.") }
-            if info.channels > 2 { warnings.append("Surround source downmixed to stereo; the downmix is not lossless.") }
+            if fold { warnings.append("Folded \(info.channels)-channel surround down to stereo, as set in Settings. Folding mixes the channels together, so it isn't lossless.") }
             if let n = info.audioStreams, n > 1 { warnings.append(info.isVideo ? (n == 2 ? "2 audio tracks: the first is levelled, the second is copied untouched." : "\(n) audio tracks: the first is levelled, the other \(n - 1) are copied untouched.") : "Only the first of \(n) audio tracks is kept: WAV holds one track.") }
             if ext == "mkv" { warnings.append("Saved as MKV so every stream could be copied untouched. Resolume may not open MKV; supply MOV or MP4 sources for playback files.") }
             progress(0.96, "Tracing loudness over time")
@@ -418,6 +435,6 @@ extension AudioEngine {
         var filters: [String] = []
         if let clip = ClipGain.filter(regions) { filters.append(clip) }
         filters.append(ClipGain.trim(start: start, end: end, sampleRate: info.sampleRate ?? 48000))
-        return try measure(input, token: token, duration: end - start, filters: filters.joined(separator: ",")).integrated
+        return try measure(input, token: token, duration: end - start, filters: filters.joined(separator: ","), keepChannels: true).integrated
     }
 }

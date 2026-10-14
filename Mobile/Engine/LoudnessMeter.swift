@@ -5,17 +5,17 @@ import Accelerate
 // It replaces FFmpeg's ebur128, loudnorm and astats, which can't run on iOS. The Mac test suite checks its results
 // against FFmpeg on every build (Tests/mobile-engine-tests.swift).
 //
-// Feed it stereo float audio at the source sample rate (Mono and surround are downmixed by MediaReader the same way
-// FFmpeg's aformat=channel_layouts=stereo does). It produces, per 100 ms step, the momentary (400 ms) and short-term
-// (3 s) loudness, and at the end integrated loudness, loudness range, true peak, sample peak, RMS, peak count and DC.
+// Feed it float audio at the source sample rate, one array per channel, with each channel's BS.1770 weight (1 for front
+// channels, 1.41 for surround, 0 for LFE; see ChannelMap). It produces, per 100 ms step, the momentary (400 ms) and
+// short-term (3 s) loudness, and at the end integrated loudness, loudness range, true peak, sample peak, RMS, peak count and DC.
 
 final class LoudnessMeter {
     let sampleRate: Double
     // K-weighting: a high-shelf and the RLB high-pass, as two biquad sections per channel.
     private var setup: vDSP_biquad_Setup
-    private var delayL: [Float]
-    private var delayR: [Float]
-    // 100 ms segments: energy of K-weighted L+R, and sample count (segments can be 1 sample longer at odd rates).
+    let weights: [Double]
+    private var delays: [[Float]]
+    // 100 ms segments: weighted energy of the K-weighted channels, and sample count (segments can be 1 sample longer at odd rates).
     private var segmentEnergy: [Double] = []
     private var segmentLength: [Int] = []
     private var currentEnergy = 0.0
@@ -27,8 +27,7 @@ final class LoudnessMeter {
     private let upsample: Int
     private let phases: [[Float]]          // each phase's taps, reversed for vDSP_conv
     private let taps: Int
-    private var historyL: [Float]
-    private var historyR: [Float]
+    private var histories: [[Float]]
     private(set) var truePeakLinear: Float = 0
     // Sample statistics (astats "Overall" equivalents).
     private(set) var samplePeakLinear: Float = 0
@@ -42,8 +41,9 @@ final class LoudnessMeter {
     /// Unclamped short-term values of complete 3 s windows, for the loudness range.
     private var shortTermFull: [Double] = []
 
-    init(sampleRate: Double) {
+    init(sampleRate: Double, weights: [Double] = [1, 1]) {
         self.sampleRate = sampleRate
+        self.weights = weights.isEmpty ? [1] : weights
         let fs = sampleRate
         // Pre-filter (high shelf) and RLB high-pass, coefficients for any rate (libebur128's derivation of BS.1770).
         var f0 = 1681.974450955533, Q = 0.7071752369554196
@@ -59,15 +59,13 @@ final class LoudnessMeter {
         // vDSP order per section: b0, b1, b2, a1, a2.
         let coefficients: [Double] = [pb[0], pb[1], pb[2], pa[0], pa[1], 1, -2, 1, ra[0], ra[1]]
         setup = vDSP_biquad_CreateSetup(coefficients, 2)!
-        delayL = [Float](repeating: 0, count: 2 * 2 + 2)
-        delayR = [Float](repeating: 0, count: 2 * 2 + 2)
+        delays = Array(repeating: [Float](repeating: 0, count: 2 * 2 + 2), count: self.weights.count)
         nextBoundary = Int((fs / 10).rounded())
         // True peak at ≥ 192 kHz like FFmpeg's loudnorm: 4× at 44.1/48 kHz, 2× at 88.2/96 kHz.
         upsample = fs < 96000 ? 4 : (fs < 192000 ? 2 : 1)
         taps = 24
         phases = LoudnessMeter.interpolationPhases(factor: upsample, tapsPerPhase: taps)
-        historyL = [Float](repeating: 0, count: taps - 1)
-        historyR = [Float](repeating: 0, count: taps - 1)
+        histories = Array(repeating: [Float](repeating: 0, count: taps - 1), count: self.weights.count)
     }
     deinit { vDSP_biquad_DestroySetup(setup) }
 
@@ -93,37 +91,47 @@ final class LoudnessMeter {
         }
     }
 
-    /// Adds `frames` stereo frames (separate left and right arrays).
+    /// Adds stereo frames (separate left and right arrays).
     func add(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frames: Int) {
-        guard frames > 0 else { return }
-        // Sample statistics on the unweighted signal.
-        var maxL: Float = 0, maxR: Float = 0
-        vDSP_maxmgv(left, 1, &maxL, vDSP_Length(frames)); vDSP_maxmgv(right, 1, &maxR, vDSP_Length(frames))
-        let chunkPeak = max(maxL, maxR)
+        add([Array(UnsafeBufferPointer(start: left, count: frames)), Array(UnsafeBufferPointer(start: right, count: frames))])
+    }
+    /// Adds one chunk: an array per channel, all the same length, in the order of `weights`.
+    func add(_ channels: [[Float]]) {
+        guard let frames = channels.first?.count, frames > 0 else { return }
+        precondition(channels.count == weights.count, "LoudnessMeter: channel count changed")
+        // Sample statistics on the unweighted signal, over every channel.
+        var chunkPeak: Float = 0
+        for x in channels { var m: Float = 0; vDSP_maxmgv(x, 1, &m, vDSP_Length(frames)); chunkPeak = max(chunkPeak, m) }
         if chunkPeak > samplePeakLinear { samplePeakLinear = chunkPeak; peakCount = 0 }
         if chunkPeak >= samplePeakLinear * 0.999_999 && samplePeakLinear > 0 {
             let limit = samplePeakLinear * 0.999_999
-            for i in 0..<frames { if abs(left[i]) >= limit { peakCount += 1 }; if abs(right[i]) >= limit { peakCount += 1 } }
+            for x in channels { for i in 0..<frames where abs(x[i]) >= limit { peakCount += 1 } }
         }
-        var sqL: Float = 0, sqR: Float = 0, sL: Float = 0, sR: Float = 0
-        vDSP_svesq(left, 1, &sqL, vDSP_Length(frames)); vDSP_svesq(right, 1, &sqR, vDSP_Length(frames))
-        vDSP_sve(left, 1, &sL, vDSP_Length(frames)); vDSP_sve(right, 1, &sR, vDSP_Length(frames))
-        sumSquares += Double(sqL) + Double(sqR); sum += Double(sL) + Double(sR); valueCount += 2 * frames
+        for x in channels {
+            var sq: Float = 0, sm: Float = 0
+            vDSP_svesq(x, 1, &sq, vDSP_Length(frames)); vDSP_sve(x, 1, &sm, vDSP_Length(frames))
+            sumSquares += Double(sq); sum += Double(sm)
+        }
+        valueCount += channels.count * frames
 
-        truePeak(left, frames: frames, history: &historyL)
-        truePeak(right, frames: frames, history: &historyR)
+        for c in channels.indices { channels[c].withUnsafeBufferPointer { truePeak($0.baseAddress!, frames: frames, history: &histories[c]) } }
 
-        // K-weighting, then 100 ms segment energies.
-        var kl = [Float](repeating: 0, count: frames), kr = [Float](repeating: 0, count: frames)
-        vDSP_biquad(setup, &delayL, left, 1, &kl, 1, vDSP_Length(frames))
-        vDSP_biquad(setup, &delayR, right, 1, &kr, 1, vDSP_Length(frames))
+        // K-weighting, then 100 ms segment energies (each channel times its weight; LFE is left out).
+        var weighted: [(Double, [Float])] = []
+        for c in channels.indices where weights[c] > 0 {
+            var k = [Float](repeating: 0, count: frames)
+            channels[c].withUnsafeBufferPointer { x in vDSP_biquad(setup, &delays[c], x.baseAddress!, 1, &k, 1, vDSP_Length(frames)) }
+            weighted.append((weights[c], k))
+        }
         var offset = 0
         while offset < frames {
             let take = min(frames - offset, nextBoundary - samplesSeen)
-            var e1: Float = 0, e2: Float = 0
-            kl.withUnsafeBufferPointer { vDSP_svesq($0.baseAddress! + offset, 1, &e1, vDSP_Length(take)) }
-            kr.withUnsafeBufferPointer { vDSP_svesq($0.baseAddress! + offset, 1, &e2, vDSP_Length(take)) }
-            currentEnergy += Double(e1) + Double(e2); currentLength += take
+            for (w, k) in weighted {
+                var e: Float = 0
+                k.withUnsafeBufferPointer { vDSP_svesq($0.baseAddress! + offset, 1, &e, vDSP_Length(take)) }
+                currentEnergy += w * Double(e)
+            }
+            currentLength += take
             samplesSeen += take; offset += take
             if samplesSeen == nextBoundary { closeSegment() }
         }
@@ -237,15 +245,21 @@ final class WaveformBuilder {
     }
 
     func add(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frames: Int) {
+        add([Array(UnsafeBufferPointer(start: left, count: frames)), Array(UnsafeBufferPointer(start: right, count: frames))])
+    }
+    /// One chunk, an array per channel. Peaks and silence use every channel; the phase reading uses the first two.
+    func add(_ channels: [[Float]]) {
+        guard let frames = channels.first?.count else { return }
+        let pair = channels.count >= 2
         for i in 0..<frames {
-            let l = left[i], r = right[i]
-            guard l.isFinite, r.isFinite else { frame += 1; continue }
-            let v = max(abs(l), abs(r))
+            var v: Float = 0, finite = true
+            for x in channels { let s = x[i]; if !s.isFinite { finite = false; break }; v = max(v, abs(s)) }
+            guard finite else { frame += 1; continue }
             let b = min(peaks.count - 1, Int(Double(frame) / perBin))
             if v > peaks[b] { peaks[b] = v }
             let d = min(detail.count - 1, Int(Double(frame) / perDetail))
             if v > detail[d] { detail[d] = v }
-            sumL2 += Double(l * l); sumR2 += Double(r * r); sumLR += Double(l * r)
+            if pair { let l = channels[0][i], r = channels[1][i]; sumL2 += Double(l * l); sumR2 += Double(r * r); sumLR += Double(l * r) }
             if v > Self.audible { if firstAudible == nil { firstAudible = frame }; lastAudible = frame }
             frame += 1
         }

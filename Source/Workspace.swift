@@ -158,6 +158,7 @@ struct ExportReport: Codable {
             return n.changesAudio(duration: duration) ? n : nil
         }
         if audible(used.edit) != audible(job.edit) { return true }
+        if (job.analysis?.info.channels ?? 2) > 2, used.foldsSurround != settings.foldsSurround { return true }
         used.clipGain = nil; used.edit = nil
         // Per-cue recommendations and Quick Level legitimately change some settings per cue; compare what the user controls.
         if autoRecommend || used.format == .lossless {
@@ -288,7 +289,9 @@ struct ExportReport: Codable {
                     let attributes = try? FileManager.default.attributesOfItem(atPath: current.source.path)
                     let size = (attributes?[.size] as? NSNumber)?.int64Value
                     let modified = attributes?[.modificationDate] as? Date
-                    if render, let existing = current.analysis, size == existing.info.byteCount, modified == existing.info.modified { analysis = existing }
+                    // 2.1: measured again when the earlier reading used other channels (older versions, or Fold surround changed).
+                    if render, let existing = current.analysis, size == existing.info.byteCount, modified == existing.info.modified,
+                       existing.matchesChannels(foldingSurround: settings.foldsSurround) { analysis = existing }
                     else {
                         analysis = try await measureCue(current.source, token: cancellation) { value, message in
                             Task { @MainActor in self.progress(id, render ? value * 0.3 : value, message) }
@@ -481,7 +484,8 @@ struct ExportReport: Codable {
     /// can't open (MKV, WebM and other formats outside AVFoundation) are measured by FFmpeg as before.
     func measureCue(_ url: URL, token: Cancellation, progress: @escaping @Sendable (Double, String) -> Void) async throws -> Analysis {
         progress(0, "Opening file")
-        if let media = try? await MediaReader.open(url) {
+        let fold = settings.foldsSurround
+        if let media = try? await MediaReader.open(url, foldSurround: fold) {
             do {
                 let (analysis, readings) = try await offPool {
                     try MobileEngine.analyzeOpened(media, isCancelled: { (try? token.check()) == nil }) { value in progress(value, "Measuring loudness, peaks and silence") }
@@ -492,7 +496,7 @@ struct ExportReport: Codable {
             } catch is CancellationError { throw CancellationError() }
             catch { if (try? token.check()) == nil { throw CancellationError() } }   // otherwise fall back to FFmpeg
         }
-        return try await offPool { try AudioEngine.analyze(url, token: token, progress: progress) }
+        return try await offPool { try AudioEngine.analyze(url, foldSurround: fold, token: token, progress: progress) }
     }
     @Published var showShortcuts = false
     var selectedEdit: CueEdit { selected?.edit ?? CueEdit() }
@@ -981,6 +985,14 @@ struct ExportReport: Codable {
         guard panel.runModal() == .OK, let folder = panel.url else { return }
         if Self.sameFolder(folder, outputFolder) { error = "The watch folder must be different from the Quick Level output folder, or levelled files would be picked up again."; return }
         watchFolder = folder; if watching { startWatching() } else { persist() }
+    }
+    /// 2.1: Fold surround to stereo. Surround cues not levelled yet are measured again with the new channels; levelled
+    /// ones keep their copy until they're levelled again.
+    func setFoldSurround(_ on: Bool) {
+        guard settings.foldsSurround != on else { return }
+        settings.foldToStereo = on ? true : nil
+        let stale = jobs.filter { ($0.analysis?.info.channels ?? 0) > 2 && $0.output == nil }.map(\.id)
+        if !stale.isEmpty, !busy { run(ids: stale, render: false) }
     }
     func setWatching(_ on: Bool) {
         if on { if watchFolder == nil { chooseWatchFolder() }; guard watchFolder != nil else { return }; startWatching() }

@@ -82,6 +82,12 @@ struct ShowSettingsSheet: View {
             Text(formatHint).hint()
         }
         section {
+            Toggle(isOn: Binding(get: { model.settings.foldsSurround }, set: { model.setFoldSurround($0) })) { Text("Fold surround to stereo").sectionTitle().frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
+            Text(model.settings.foldsSurround
+                 ? "Surround files (5.1, 7.1) are folded down to stereo for a stereo PA. Folding mixes the channels together, so those copies aren't lossless. Mono and stereo files are unchanged."
+                 : "Every levelled copy has the same channels as its source: mono stays mono, 5.1 stays 5.1. Turn this on only if your PA plays stereo and you want surround files folded down.").hint()
+        }
+        section {
             Toggle(isOn: Binding(get: { model.watching }, set: { model.setWatching($0) })) { Text("Watch a folder").sectionTitle().frame(maxWidth: .infinity, alignment: .leading) }.toggleStyle(CLSwitch())
             if model.watchFolder != nil || model.watching { folderRow(model.watchFolder, empty: "Choose folder") { model.chooseWatchFolder() } }
             Text("New files are added the moment they finish copying in\(model.quickLevel ? ", and levelled straight away" : ""). Files already there are left alone.").hint()

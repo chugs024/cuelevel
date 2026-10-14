@@ -21,10 +21,11 @@ func videoDigest(_ url: URL) throws -> String {
     try AudioEngine.run(["-i", url.path, "-map", "0:v:0", "-c", "copy", "-f", "md5", "pipe:1"], token: Cancellation(), output: { box.data.append($0) })
     return String(decoding: box.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 }
-/// Integrated loudness from FFmpeg's ebur128 filter, the BS.1770 reference meter. (loudnorm, which the Mac app measures with,
-/// reads fast-decaying material such as stings up to about 0.4 LU lower; the device follows ebur128.)
+/// Integrated loudness from FFmpeg's ebur128 filter, the BS.1770 reference meter, on the file's own channels (surround
+/// weighted, LFE left out). (loudnorm, which the Mac app measures with, reads fast-decaying material such as stings up to
+/// about 0.4 LU lower; the device follows ebur128.)
 func referenceLoudness(_ url: URL) throws -> Double {
-    let log = try AudioEngine.run(["-i", url.path, "-map", "0:a:0", "-vn", "-af", "aformat=channel_layouts=stereo,ebur128", "-f", "null", "-"], token: Cancellation())
+    let log = try AudioEngine.run(["-i", url.path, "-map", "0:a:0", "-vn", "-af", "ebur128", "-f", "null", "-"], token: Cancellation())
     guard let block = log.range(of: "Integrated loudness:", options: .backwards),
           let i = log[block.upperBound...].range(of: #"I:\s+(-?[0-9.]+)"#, options: .regularExpression) else { return .nan }
     return Double(log[i].split(whereSeparator: { $0 == " " || $0 == ":" }).last.map(String.init) ?? "") ?? .nan
@@ -32,10 +33,10 @@ func referenceLoudness(_ url: URL) throws -> Double {
 func sha(_ url: URL) throws -> String { SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined() }
 
 /// Compares the on-device analysis with FFmpeg's measurement of the same file.
-func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Double = 0.3, range: Double = 1.2) async throws -> (Analysis, EvenOutData) {
+func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Double = 0.3, range: Double = 1.2, momentary: Bool = true) async throws -> (Analysis, EvenOutData) {
     let token = Cancellation()
     let info = try AudioEngine.inspect(url, token: token)
-    let reference = try AudioEngine.measure(url, token: token, duration: info.duration)
+    let reference = try AudioEngine.measure(url, token: token, duration: info.duration, keepChannels: true)
     let (mobile, data) = try await MobileEngine.analyze(url)
     let m = mobile.levels
     let ebur = try referenceLoudness(url)
@@ -49,7 +50,9 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
     if let a = m.samplePeak, let b = reference.samplePeak { check(a <= b + 0.05 && a >= b - 1.0, "\(name): sample peak consistent with FFmpeg (\(a) vs \(b))") }
     if let a = m.dcOffset, let b = reference.dcOffset { check(near(a, b, 0.0005), "\(name): DC offset matches FFmpeg") }
     check(near(mobile.info.duration, info.duration, 0.1), "\(name): duration matches FFmpeg")
-    // Momentary loudness every 100 ms, as Even out reads it.
+    check(mobile.channelsMeasured == info.channels, "\(name): every channel measured (\(mobile.channelsMeasured ?? 0) of \(info.channels))")
+    // Momentary loudness every 100 ms, as Even out reads it (FFmpeg's Even out reading is stereo, so only mono/stereo).
+    guard momentary, info.channels <= 2 else { return (mobile, data) }
     let ff = try AudioEngine.momentaryLoudness(url, duration: info.duration, token: token).map(Double.init)
     let ours = data.momentary.map(Double.init)
     let n = min(ff.count, ours.count)
@@ -154,12 +157,13 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         // Audio: one gain change, measured by FFmpeg.
         let levelled = try await MobileEngine.level(file("speech.wav"), analysis: speech, settings: settings, directory: out)
         let levelledInfo = try AudioEngine.inspect(levelled.url, token: token)
-        let levelledFF = try AudioEngine.measure(levelled.url, token: token, duration: levelledInfo.duration)
+        let levelledFF = try AudioEngine.measure(levelled.url, token: token, duration: levelledInfo.duration, keepChannels: true)
         note("speech → \(levelled.url.lastPathComponent): \(f(levelledFF.integrated)) LUFS, \(f(levelledFF.truePeak)) dBTP (gain \(String(format: "%+.2f", levelled.gainApplied ?? 0)), shortfall \(String(format: "%.2f", levelled.shortfall ?? 0)))")
         check(levelled.url.lastPathComponent == "speech_LVL-18.wav", "output named with the target")
         check(near(try referenceLoudness(levelled.url), settings.target - (levelled.shortfall ?? 0), 0.1), "levelled audio reaches the target (ebur128)")
         check(levelledFF.truePeak <= settings.peak + 0.2, "levelled audio stays under the ceiling (FFmpeg)")
         check(levelledInfo.sampleRate == 44100 && levelledInfo.audioDescription.hasPrefix("pcm_s24le"), "WAV at the source rate, 24-bit")
+        check(levelledInfo.channels == 1, "mono stays mono (\(levelledInfo.channels) channels)")
         check(near(levelledInfo.duration, speech.info.duration, 0.01), "no samples added or lost")
         check(near(levelled.levels.integrated, try referenceLoudness(levelled.url), 0.1), "the device's own verification agrees with ebur128")
         // A gain change only: the output divided by the gain is the input, sample for sample (within 24-bit rounding).
@@ -168,7 +172,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         let a = AVAudioPCMBuffer(pcmFormat: source.processingFormat, frameCapacity: 44100)!, b = AVAudioPCMBuffer(pcmFormat: result.processingFormat, frameCapacity: 44100)!
         try source.read(into: a, frameCount: 44100); try result.read(into: b, frameCount: 44100)
         var worst: Float = 0
-        for i in 0..<Int(a.frameLength) { worst = max(worst, abs(b.floatChannelData![0][i] / Float(gain) - a.floatChannelData![0][i] * 0.70710677)) }
+        for i in 0..<Int(a.frameLength) { worst = max(worst, abs(b.floatChannelData![0][i] / Float(gain) - a.floatChannelData![0][i])) }
         note("largest sample difference after removing the gain: \(worst)")
         check(worst < 2e-6, "levelling is one exact gain change")
 
@@ -185,7 +189,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         edited.edit = edit
         let editedOut = try await MobileEngine.level(file("speech.wav"), analysis: speech, settings: edited, directory: out)
         let editedInfo = try AudioEngine.inspect(editedOut.url, token: token)
-        let editedFF = try AudioEngine.measure(editedOut.url, token: token, duration: editedInfo.duration)
+        let editedFF = try AudioEngine.measure(editedOut.url, token: token, duration: editedInfo.duration, keepChannels: true)
         note("edited → \(f(editedInfo.duration)) s, \(f(editedFF.integrated)) LUFS, \(f(editedFF.truePeak)) dBTP")
         check(near(editedInfo.duration, 24.0, 0.01), "in and out points cut the audio file")
         check(near(editedFF.integrated, settings.target - (editedOut.shortfall ?? 0), 0.25), "edited cue is measured after the edits, then levelled")
@@ -196,7 +200,7 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         check(show.info.isVideo && show.info.audioStreams == 2 && show.info.videoCodec == "mpeg4", "video info")
         let video = try await MobileEngine.level(file("show.mov"), analysis: show, settings: settings, directory: out)
         let videoInfo = try AudioEngine.inspect(video.url, token: token)
-        let videoFF = try AudioEngine.measure(video.url, token: token, duration: videoInfo.duration)
+        let videoFF = try AudioEngine.measure(video.url, token: token, duration: videoInfo.duration, keepChannels: true)
         note("video → \(video.url.lastPathComponent): \(f(videoFF.integrated)) LUFS, \(f(videoFF.truePeak)) dBTP, \(videoInfo.audioStreams ?? 0) audio tracks, \(videoInfo.audioDescription)")
         check(video.url.pathExtension == "mov", "video saved as MOV")
         check(try videoDigest(video.url) == videoDigest(file("show.mov")), "picture copied bit for bit")
@@ -204,6 +208,66 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         check(videoInfo.audioDescription.hasPrefix("pcm_"), "levelled track is uncompressed PCM")
         check(near(videoFF.integrated, settings.target - (video.shortfall ?? 0), 0.25), "video's audio reaches the target (FFmpeg)")
         check(near(videoInfo.duration, show.info.duration, 0.1), "video keeps its length")
+
+        print("== Surround keeps its channels (2.1)")
+        // 5.1 with a different tone and level on every channel (FFmpeg writes WAV's standard order: L R C LFE Ls Rs), so a
+        // channel swapped, dropped or mixed shows up. The LFE is loud, as BS.1770 leaves it out of the loudness.
+        let tones = ["0.30*sin(2*PI*300*t)", "0.25*sin(2*PI*500*t)", "0.20*sin(2*PI*700*t)", "0.60*sin(2*PI*60*t)", "0.10*sin(2*PI*1100*t)", "0.15*sin(2*PI*1300*t)"]
+        let swell = "*(0.7+0.3*sin(2*PI*0.25*t))"
+        try ffmpeg(["-f", "lavfi", "-i", "aevalsrc='" + tones.map { $0 + swell }.joined(separator: "|") + "':s=48000:d=12:c=5.1", "-c:a", "pcm_s24le", file("five.wav").path])
+        try ffmpeg(["-i", file("five.wav").path, "-c:a", "aac", "-b:a", "384k", file("five.m4a").path])
+        try ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=12", "-i", file("five.wav").path, "-map", "0:v", "-map", "1:a",
+                    "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-b:a", "384k", "-shortest", file("five.mov").path])
+        let (five, _) = try await compare("5.1 WAV", file("five.wav"), integrated: 0.1)
+        _ = try await compare("5.1 AAC (M4A)", file("five.m4a"), integrated: 0.25, truePeak: 0.5)
+        check(five.info.channels == 6 && five.foldedToStereo == nil, "5.1 measured as 5.1")
+        // The loud LFE tone would add several LU if it were counted; matching ebur128 above shows it is left out.
+        let fiveOut = try await MobileEngine.level(file("five.wav"), analysis: five, settings: settings, directory: out)
+        let fiveInfo = try AudioEngine.inspect(fiveOut.url, token: token)
+        note("5.1 → \(fiveOut.url.lastPathComponent): \(fiveInfo.audioDescription), device \(f(fiveOut.levels.integrated)) vs ebur128 \(f(try referenceLoudness(fiveOut.url))) LUFS")
+        check(fiveInfo.channels == 6 && fiveInfo.audioDescription.contains("5.1"), "5.1 WAV stays 5.1 with its layout (\(fiveInfo.audioDescription))")
+        check(near(try referenceLoudness(fiveOut.url), settings.target - (fiveOut.shortfall ?? 0), 0.1), "levelled 5.1 reaches the target (ebur128)")
+        check(!fiveOut.warnings.contains { $0.contains("Folded") }, "no fold note when every channel is kept")
+        // Every channel is the same channel of the source times the one gain, in the same place.
+        do {
+            let src = try AVAudioFile(forReading: file("five.wav")), res = try AVAudioFile(forReading: fiveOut.url)
+            check(src.processingFormat.channelCount == 6 && res.processingFormat.channelCount == 6, "both files read as 6 channels")
+            let a = AVAudioPCMBuffer(pcmFormat: src.processingFormat, frameCapacity: 48000)!, b = AVAudioPCMBuffer(pcmFormat: res.processingFormat, frameCapacity: 48000)!
+            try src.read(into: a, frameCount: 48000); try res.read(into: b, frameCount: 48000)
+            let g = Float(pow(10, (fiveOut.gainApplied ?? 0) / 20))
+            var worst: Float = 0
+            for c in 0..<6 { for i in 0..<Int(a.frameLength) { worst = max(worst, abs(b.floatChannelData![c][i] / g - a.floatChannelData![c][i])) } }
+            note("5.1: largest sample difference per channel after removing the gain: \(worst)")
+            check(worst < 2e-6, "5.1 levelling is one exact gain on every channel, none swapped")
+        }
+        // AAC 5.1 decodes in AAC's own channel order (C L R Ls Rs LFE); the WAV must still come out in WAV order.
+        let (fiveAAC, _) = try await MobileEngine.analyze(file("five.m4a"))
+        let fiveAACOut = try await MobileEngine.level(file("five.m4a"), analysis: fiveAAC, settings: settings, directory: out)
+        do {
+            let ref = try AVAudioFile(forReading: file("five.wav")), res = try AVAudioFile(forReading: fiveAACOut.url)
+            let a = AVAudioPCMBuffer(pcmFormat: ref.processingFormat, frameCapacity: 48000 * 4)!, b = AVAudioPCMBuffer(pcmFormat: res.processingFormat, frameCapacity: 48000 * 4)!
+            try ref.read(into: a, frameCount: 48000 * 4); try res.read(into: b, frameCount: 48000 * 4)
+            func rms(_ buf: AVAudioPCMBuffer, _ c: Int) -> Double { let n = Int(buf.frameLength); var s = 0.0; for i in 0..<n { let v = Double(buf.floatChannelData![c][i]); s += v * v }; return 10 * log10(s / Double(max(1, n))) }
+            let gain = fiveAACOut.gainApplied ?? 0
+            let diffs = (0..<6).map { rms(b, $0) - gain - rms(a, $0) }
+            note("5.1 AAC → WAV channel levels vs source: " + diffs.map { String(format: "%+.2f", $0) }.joined(separator: " ") + " dB")
+            check(res.processingFormat.channelCount == 6 && diffs.allSatisfy { abs($0) < 0.5 }, "5.1 AAC comes out in WAV channel order, each channel at its own level")
+        }
+        // Video with a 5.1 soundtrack: the levelled MOV track stays 5.1.
+        let (fiveMov, _) = try await MobileEngine.analyze(file("five.mov"))
+        let fiveMovOut = try await MobileEngine.level(file("five.mov"), analysis: fiveMov, settings: settings, directory: out)
+        let fiveMovInfo = try AudioEngine.inspect(fiveMovOut.url, token: token)
+        note("5.1 video → \(fiveMovInfo.audioDescription), \(f(try referenceLoudness(fiveMovOut.url))) LUFS")
+        check(fiveMovInfo.channels == 6 && fiveMovInfo.audioDescription.hasPrefix("pcm_"), "5.1 video keeps a 5.1 PCM track")
+        check(near(try referenceLoudness(fiveMovOut.url), settings.target - (fiveMovOut.shortfall ?? 0), 0.25), "5.1 video reaches the target (ebur128)")
+        check(try videoDigest(fiveMovOut.url) == videoDigest(file("five.mov")), "5.1 video: picture copied bit for bit")
+        // Fold surround to stereo, when asked.
+        var fold = settings; fold.foldToStereo = true
+        let (fiveFolded, _) = try await MobileEngine.analyze(file("five.wav"), foldSurround: true)
+        check(fiveFolded.foldedToStereo == true && fiveFolded.channelsMeasured == 2, "folded measurement is marked")
+        let foldedOut = try await MobileEngine.level(file("five.wav"), analysis: fiveFolded, settings: fold, directory: out)
+        let foldedInfo = try AudioEngine.inspect(foldedOut.url, token: token)
+        check(foldedInfo.channels == 2 && foldedOut.warnings.contains { $0.contains("Folded") }, "Fold surround to stereo folds, and says so")
 
         // Already good: an exact copy.
         let copy = try MobileEngine.unchangedCopy(file("speech.flac"), analysis: speech, settings: settings, directory: out)

@@ -29,6 +29,9 @@ struct MobileCue: Codable, Identifiable, Equatable, Sendable {
     /// Plan switches for this cue (nil = the show default).
     var trim: Bool? = nil
     var evenOut: Bool? = nil
+    /// 2.1: how many channels the measurement used (the source's, or 2 when surround was folded). nil for cues measured
+    /// by older versions, which always measured in stereo.
+    var measuredChannels: Int? = nil
 
     static func == (a: MobileCue, b: MobileCue) -> Bool {
         a.id == b.id && a.state == b.state && a.message == b.message && a.mode == b.mode && a.outputName == b.outputName
@@ -56,6 +59,9 @@ struct MobileSettings: Codable, Equatable, Sendable {
     var evenOut = true
     var trimSilence = true
     var levelOnAdd = false
+    /// Fold surround sources down to stereo. Off: every channel is kept (optional so older saved shows still open).
+    var foldToStereo: Bool? = nil
+    var foldsSurround: Bool { get { foldToStereo ?? false } set { foldToStereo = newValue } }
 }
 
 /// Stop flag the engine checks from its own threads.
@@ -69,7 +75,13 @@ private struct Session: Codable { var version = 1; var cues: [MobileCue]; var se
 @MainActor
 final class CueStore: ObservableObject {
     @Published var cues: [MobileCue] = []
-    @Published var settings = MobileSettings() { didSet { if settings != oldValue { save() } } }
+    @Published var settings = MobileSettings() {
+        didSet {
+            guard settings != oldValue else { return }
+            save()
+            if settings.foldsSurround != oldValue.foldsSurround { remeasureChangedChannels() }
+        }
+    }
     @Published var selection: UUID?
     @Published var progress: [UUID: Double] = [:]
     @Published var progressLabel: [UUID: String] = [:]
@@ -114,7 +126,22 @@ final class CueStore: ObservableObject {
             }
             return c
         }
+        remeasureChangedChannels()
         if cues.contains(where: { $0.state == .queued }) { startWorker() }
+    }
+    /// Channels a cue should be measured and levelled with: the source's own, or 2 when surround is folded.
+    func expectedChannels(_ analysis: Analysis) -> Int { analysis.info.channels > 2 && settings.foldsSurround ? 2 : analysis.info.channels }
+    /// Measures again any cue whose measurement used other channels than the setting now asks for (cues measured
+    /// folded or as dual mono by an older version, or after Fold surround to stereo was switched).
+    func remeasureChangedChannels() {
+        var changed = false
+        for i in cues.indices {
+            // Cues with a levelled copy keep it as it was made; Level again measures them afresh first.
+            guard let a = cues[i].analysis, a.info.channels != 2, cues[i].output == nil, cues[i].state != .measuring, cues[i].state != .levelling else { continue }
+            let measured = cues[i].measuredChannels ?? 2
+            if measured != expectedChannels(a) { cues[i].state = .queued; cues[i].message = ""; changed = true }
+        }
+        if changed { save(); startWorker() }
     }
     func save() {
         let snapshot = Session(cues: cues, settings: settings), url = Self.sessionURL
@@ -136,6 +163,7 @@ final class CueStore: ObservableObject {
         var s = ProcessingSettings()
         s.setMode(mode(for: cue))
         s.target = settings.target; s.peak = settings.peak; s.format = .lossless
+        s.foldToStereo = settings.foldsSurround ? true : nil
         return s
     }
     func plan(for cue: MobileCue) -> CuePlan? {
@@ -274,12 +302,14 @@ final class CueStore: ObservableObject {
         let url = originalURL(c)
         let flag = cancel
         let check: @Sendable () -> Bool = { flag.value }
+        let fold = settings.foldsSurround
         do {
             let (analysis, detail) = try await Task.detached(priority: .userInitiated) {
-                try await MobileEngine.analyze(url, isCancelled: { check() }, progress: { p in Task { @MainActor [weak self] in self?.progress[id] = p } })
+                try await MobileEngine.analyze(url, foldSurround: fold, isCancelled: { check() }, progress: { p in Task { @MainActor [weak self] in self?.progress[id] = p } })
             }.value
             if let data = try? JSONEncoder().encode(detail) { try? data.write(to: Self.details.appendingPathComponent(id.uuidString + ".json")) }
-            update(id) { $0.analysis = analysis; $0.state = .measured; $0.message = "" }
+            let channels = analysis.foldedToStereo == true ? 2 : analysis.info.channels
+            update(id) { $0.analysis = analysis; $0.measuredChannels = channels; $0.state = .measured; $0.message = "" }
         } catch is CancellationError {
             update(id) { $0.state = .queued }
         } catch {
@@ -294,7 +324,8 @@ final class CueStore: ObservableObject {
     }
 
     private func levelOne(_ id: UUID) async {
-        guard let c = cue(id), let analysis = c.analysis else { return }
+        if let c = cue(id), let a = c.analysis, a.info.channels != 2, (c.measuredChannels ?? 2) != expectedChannels(a) { await measure(id) }
+        guard let c = cue(id), let analysis = c.analysis, c.state != .failed, c.state != .queued else { return }
         update(id) { $0.state = .levelling; $0.message = "" }
         progress[id] = 0; progressLabel[id] = "Planning"
         var s = processing(for: c)
@@ -311,7 +342,7 @@ final class CueStore: ObservableObject {
         var skipped = false
         if (c.evenOut ?? settings.evenOut) && mode != .music {
             var data = evenOutData(id)
-            if data == nil { let source = originalURL(c); data = try? await Task.detached { try await MobileEngine.analyze(source).1 }.value }
+            if data == nil { let source = originalURL(c), fold = settings.foldsSurround; data = try? await Task.detached { try await MobileEngine.analyze(source, foldSurround: fold).1 }.value }
             if let data {
                 let plan = MobileEngine.evenOutPlan(data, duration: duration, tolerance: library.evenOutTolerance(for: mode), keeping: [], skipMusic: c.mode == nil)
                 regions = plan.regions; skipped = plan.soundsLikeMusic

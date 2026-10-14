@@ -70,7 +70,8 @@ DETAILED WORK: REVIEW, PROCESSING AND REFERENCES
 
 WHAT CUELEVEL DOES NOT DO
 Set the audience volume (that stays at the desk), correct the room, repair existing distortion, separate speech from
-music, or remove reverb. Surround sources are downmixed to stereo, which is not lossless.
+music, or remove reverb. Levelled copies keep the source's channels (mono stays mono, 5.1 stays 5.1)
+unless "Fold surround to stereo" is on; folding is not lossless.
 
 CLIP GAIN (EVEN OUT VOICES)
 Select a cue and click "Clip gain" above the waveform. Drag across the waveform to select a section, then drag its white

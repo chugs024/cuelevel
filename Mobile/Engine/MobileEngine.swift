@@ -3,7 +3,8 @@ import AVFoundation
 
 // CueLevel's engine on iPhone and iPad. Same results and the same rules as the Mac's lossless mode:
 // one exact gain change per cue (plus any clip gain sections), never past the peak ceiling, no compression,
-// no limiting, no resampling. Audio becomes WAV at its own sample rate (24-bit, or 32-bit float for float sources);
+// no limiting, no resampling, and the source's own channels (mono stays mono, 5.1 stays 5.1) unless the person turns on
+// Fold surround to stereo. Audio becomes WAV at its own sample rate (24-bit, or 32-bit float for float sources);
 // video becomes MOV with the picture, other audio tracks and timecode copied untouched.
 
 /// Fine-grained readings Even out needs: momentary loudness every 100 ms and 200 peaks per second.
@@ -20,7 +21,7 @@ final class CueProcessor {
     let edit: CueEdit?
     let duration: Double
     private var frame = 0
-    private var dcPrev: [(x: Float, y: Float)] = [(0, 0), (0, 0)]
+    private var dcPrev: [(x: Float, y: Float)] = []
     private let dcA: Float
     private let edgeActive: Bool
     private let e: CueEdit
@@ -58,29 +59,33 @@ final class CueProcessor {
         return g
     }
 
-    /// Processes frames in place; `frame` keeps counting from the first sample of the cue.
-    func process(left: inout [Float], right: inout [Float]) {
-        let n = left.count
+    /// Processes one chunk in place (an array per channel); `frame` keeps counting from the first sample of the cue.
+    /// The same gain goes on every channel. Polarity fixes act on the first (left) and second (right) channel.
+    func process(_ channels: inout [[Float]]) {
+        guard let n = channels.first?.count else { return }
         if let edit, edit.removeDC {
-            for i in 0..<n {
-                let yl = dcA * (dcPrev[0].y + left[i] - dcPrev[0].x); dcPrev[0] = (left[i], yl); left[i] = yl
-                let yr = dcA * (dcPrev[1].y + right[i] - dcPrev[1].x); dcPrev[1] = (right[i], yr); right[i] = yr
+            if dcPrev.count != channels.count { dcPrev = Array(repeating: (0, 0), count: channels.count) }
+            for c in channels.indices {
+                var prev = dcPrev[c]
+                for i in 0..<n { let y = dcA * (prev.y + channels[c][i] - prev.x); prev = (channels[c][i], y); channels[c][i] = y }
+                dcPrev[c] = prev
             }
         }
         if let edit, edit.polarity != .none {
-            for i in 0..<n {
-                if edit.polarity == .left || edit.polarity == .both { left[i] = -left[i] }
-                if edit.polarity == .right || edit.polarity == .both { right[i] = -right[i] }
-            }
+            var flip: [Int] = []
+            if edit.polarity == .left || edit.polarity == .both { flip.append(0) }
+            if (edit.polarity == .right || edit.polarity == .both), channels.count > 1 { flip.append(1) }
+            for c in flip { for i in 0..<n { channels[c][i] = -channels[c][i] } }
         }
         if regions.isEmpty && !edgeActive {
-            if gain != 1 { for i in 0..<n { left[i] *= gain; right[i] *= gain } }
+            if gain != 1 { for c in channels.indices { for i in 0..<n { channels[c][i] *= gain } } }
         } else {
+            var m = [Float](repeating: 0, count: n)
             for i in 0..<n {
                 let t = Double(frame + i) / rate
-                let m = Float(ClipGain.multiplier(at: t, regions: regions) * edgeGain(t)) * gain
-                left[i] *= m; right[i] *= m
+                m[i] = Float(ClipGain.multiplier(at: t, regions: regions) * edgeGain(t)) * gain
             }
+            for c in channels.indices { for i in 0..<n { channels[c][i] *= m[i] } }
         }
         frame += n
     }
@@ -88,28 +93,29 @@ final class CueProcessor {
 
 enum MobileEngine {
     // MARK: Analysis
-    static func analyze(_ url: URL, isCancelled: @escaping () -> Bool = { false },
+    static func analyze(_ url: URL, foldSurround: Bool = false, isCancelled: @escaping () -> Bool = { false },
                         progress: @escaping (Double) -> Void = { _ in }) async throws -> (Analysis, EvenOutData) {
-        let media = try await MediaReader.open(url)
+        let media = try await MediaReader.open(url, foldSurround: foldSurround)
         return try analyzeOpened(media, isCancelled: isCancelled, progress: progress)
     }
     /// One decoding pass gives everything: loudness, true peak, range, waveform, silence, phase, the loudness curve,
     /// and Even out's readings. Synchronous, so the Mac app can run it on its own worker thread.
     static func analyzeOpened(_ media: OpenedMedia, isCancelled: @escaping () -> Bool = { false },
                               progress: @escaping (Double) -> Void = { _ in }) throws -> (Analysis, EvenOutData) {
-        let meter = LoudnessMeter(sampleRate: media.sampleRate)
+        let meter = LoudnessMeter(sampleRate: media.sampleRate, weights: media.map.weights)
         let wave = WaveformBuilder(duration: media.info.duration, sampleRate: media.sampleRate)
         let total = max(1, media.info.duration * media.sampleRate)
         var done = 0, lastReport = 0
-        try MediaReader.decode(media, isCancelled: isCancelled) { l, r, frames, _ in
-            meter.add(left: l, right: r, frames: frames)
-            wave.add(left: l, right: r, frames: frames)
+        try MediaReader.decode(media, isCancelled: isCancelled) { chunk, _ in
+            meter.add(chunk)
+            wave.add(chunk)
+            let frames = chunk[0].count
             done += frames
             if done - lastReport > Int(media.sampleRate) { lastReport = done; progress(min(1, Double(done) / total)) }
         }
         let levels = try meter.finish()
         let analysis = Analysis(info: media.info, levels: levels, waveform: wave.peaks, sampleCount: nil,
-                                stereo: wave.stats, loudnessCurve: reducedCurve(meter.shortTerm))
+                                stereo: wave.stats, loudnessCurve: reducedCurve(meter.shortTerm), foldedToStereo: media.folded ? true : nil, channelsMeasured: media.channels)
         progress(1)
         return (analysis, EvenOutData(momentary: meter.momentary, peaks: wave.detail))
     }
@@ -147,11 +153,11 @@ enum MobileEngine {
     static func level(_ input: URL, analysis: Analysis, settings: ProcessingSettings, directory: URL,
                       isCancelled: @escaping () -> Bool = { false }, progress: @escaping (Double, String) -> Void = { _, _ in }) async throws -> ProcessedAudio {
         guard (-30.0 ... -12.0).contains(settings.target), (-6.0 ... -1.0).contains(settings.peak) else { throw cueError("The loudness target or peak ceiling is outside its supported range.") }
-        let media = try await MediaReader.open(input)
+        let media = try await MediaReader.open(input, foldSurround: settings.foldsSurround)
         let info = media.info
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let free = (try? FileManager.default.attributesOfFileSystem(forPath: directory.path)[.systemFreeSize] as? NSNumber)?.int64Value ?? Int64.max
-        let estimate = Int64(info.duration * media.sampleRate * 8) + (info.isVideo ? info.byteCount : 0) + 50_000_000
+        let estimate = Int64(info.duration * media.sampleRate * 4 * Double(media.channels)) + (info.isVideo ? info.byteCount : 0) + 50_000_000
         guard free > estimate else { throw cueError("Not enough free space. Free up about \(ByteCountFormatter.string(fromByteCount: estimate, countStyle: .file)) on this device.") }
         let total = max(1, info.duration * media.sampleRate)
 
@@ -160,13 +166,13 @@ enum MobileEngine {
         var sourceLevels = analysis.levels
         if probe.changesShape {
             progress(0, "Measuring your edits")
-            let meter = LoudnessMeter(sampleRate: media.sampleRate)
+            let meter = LoudnessMeter(sampleRate: media.sampleRate, weights: media.map.weights)
             var done = 0
-            try MediaReader.decode(media, isCancelled: isCancelled) { l, r, frames, _ in
-                var left = Array(UnsafeBufferPointer(start: l, count: frames)), right = Array(UnsafeBufferPointer(start: r, count: frames))
-                probe.process(left: &left, right: &right)
-                meter.add(left: left, right: right, frames: frames)
-                done += frames; progress(0.3 * Double(done) / total, "Measuring your edits")
+            try MediaReader.decode(media, isCancelled: isCancelled) { chunk, _ in
+                var edited = chunk
+                probe.process(&edited)
+                meter.add(edited)
+                done += chunk[0].count; progress(0.3 * Double(done) / total, "Measuring your edits")
             }
             sourceLevels = try meter.finish()
         }
@@ -174,7 +180,7 @@ enum MobileEngine {
         guard plan.gain.isFinite, abs(plan.gain) < 60 else { throw cueError("The soundtrack is silent or too quiet to level reliably.") }
 
         let processor = CueProcessor(rate: media.sampleRate, gainDB: plan.gain, settings: settings, duration: info.duration)
-        let meter = LoudnessMeter(sampleRate: media.sampleRate)
+        let meter = LoudnessMeter(sampleRate: media.sampleRate, weights: media.map.weights)
         let wave = WaveformBuilder(duration: info.duration, sampleRate: media.sampleRate)
         let base = probe.changesShape ? 0.3 : 0.0
         let ext = info.isVideo ? "mov" : "wav"
@@ -202,7 +208,7 @@ enum MobileEngine {
         if abs(levels.integrated - (settings.target - plan.shortfall)) > 0.5 { warnings.append("Measured output is \(f(levels.integrated)) LUFS, which differs from the planned \(f(settings.target - plan.shortfall)) LUFS. Review before use.") }
         if levels.truePeak > settings.peak + 0.2 { warnings.append("Output true peak \(f(levels.truePeak)) dBTP is above the \(f(settings.peak)) dBTP ceiling. Review before use.") }
         if analysis.levels.truePeak >= 0 { warnings.append("Source reaches full scale. Existing distortion may remain.") }
-        if info.channels > 2 { warnings.append("Surround source downmixed to stereo; the downmix is not lossless.") }
+        if media.folded { warnings.append("Folded \(media.sourceName) surround down to stereo, as set in Settings. Folding mixes the channels together, so it isn't lossless.") }
         if let n = info.audioStreams, n > 1 { warnings.append(info.isVideo ? (n == 2 ? "2 audio tracks: the first is levelled, the second is copied untouched." : "\(n) audio tracks: the first is levelled, the other \(n - 1) are copied untouched.") : "Only the first of \(n) audio tracks is kept: WAV holds one track.") }
         if info.isVideo && info.hasOtherStreams { warnings.append("Subtitle tracks were not copied.") }
         return ProcessedAudio(url: output, levels: levels, waveform: wave.peaks, settings: settings, warnings: warnings, created: Date(),
@@ -210,41 +216,65 @@ enum MobileEngine {
     }
 
     // MARK: Audio files → WAV
+    /// Writes the levelled audio with the source's channels. Surround is stored in WAV's standard channel order with a
+    /// channel mask, so DAWs, QLab and media servers know which channel is which.
     static func writeAudio(_ media: OpenedMedia, to output: URL, processor: CueProcessor, meter: LoudnessMeter, wave: WaveformBuilder,
                            settings: ProcessingSettings, isCancelled: @escaping () -> Bool, progress: (Int) -> Void) throws {
-        let rate = media.sampleRate
-        let fileSettings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 2,
+        let rate = media.sampleRate, n = media.channels
+        var fileSettings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: n,
                                            AVLinearPCMBitDepthKey: media.isFloat ? 32 : 24, AVLinearPCMIsFloatKey: media.isFloat,
                                            AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
+        let wav = media.map.wavOrder()
+        let order = wav?.order ?? Array(0..<n)
+        if n > 2 {
+            if let wav { fileSettings[AVChannelLayoutKey] = wav.layout }
+            else {
+                var layout = AudioChannelLayout(); layout.mChannelLayoutTag = kAudioChannelLayoutTag_DiscreteInOrder | UInt32(n)
+                fileSettings[AVChannelLayoutKey] = Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
+            }
+        }
         let file = try AVAudioFile(forWriting: output, settings: fileSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 2, interleaved: false) else { throw cueError("CueLevel couldn't create the output file.") }
+        let format = file.processingFormat
+        guard Int(format.channelCount) == n else { throw cueError("CueLevel couldn't create a \(media.map.name) output file.") }
         // In and out points cut the audio file (video keeps its length and is silenced instead).
         let e = (settings.edit ?? CueEdit()).normalized(duration: media.info.duration)
         let trimmed = e.isTrimmed(duration: media.info.duration)
         let first = trimmed ? Int((e.inPoint * rate).rounded()) : 0
         let last = trimmed ? Int((e.end(duration: media.info.duration) * rate).rounded()) : Int.max
         var position = 0
-        try MediaReader.decode(media, isCancelled: isCancelled) { l, r, frames, _ in
-            var left = Array(UnsafeBufferPointer(start: l, count: frames)), right = Array(UnsafeBufferPointer(start: r, count: frames))
-            processor.process(left: &left, right: &right)
+        try MediaReader.decode(media, isCancelled: isCancelled) { chunk, _ in
+            var data = chunk
+            processor.process(&data)
+            let frames = data[0].count
             let lo = max(0, first - position), hi = min(frames, last - position)
             position += frames
             progress(position)
             guard hi > lo else { return }
+            var kept = (lo == 0 && hi == frames) ? data : data.map { Array($0[lo..<hi]) }
+            if !media.isFloat { clampForInteger(&kept) }
+            meter.add(kept)
+            wave.add(kept)
             let count = hi - lo
             guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else { return }
             buffer.frameLength = AVAudioFrameCount(count)
-            left.withUnsafeBufferPointer { p in buffer.floatChannelData![0].update(from: p.baseAddress! + lo, count: count) }
-            right.withUnsafeBufferPointer { p in buffer.floatChannelData![1].update(from: p.baseAddress! + lo, count: count) }
-            if !media.isFloat { clampForInteger(buffer) }
-            meter.add(left: buffer.floatChannelData![0], right: buffer.floatChannelData![1], frames: count)
-            wave.add(left: buffer.floatChannelData![0], right: buffer.floatChannelData![1], frames: count)
+            for k in 0..<n { kept[order[k]].withUnsafeBufferPointer { p in buffer.floatChannelData![k].update(from: p.baseAddress!, count: count) } }
             try file.write(from: buffer)
         }
     }
-    private static func clampForInteger(_ buffer: AVAudioPCMBuffer) {
+    /// 24-bit files can't hold values at or over full scale.
+    private static func clampForInteger(_ channels: inout [[Float]]) {
         let maxValue: Float = 8_388_607.0 / 8_388_608.0
-        for c in 0..<2 { let p = buffer.floatChannelData![c]; for i in 0..<Int(buffer.frameLength) { p[i] = max(-1, min(maxValue, p[i])) } }
+        for c in channels.indices { for i in channels[c].indices { channels[c][i] = max(-1, min(maxValue, channels[c][i])) } }
+    }
+    /// The channel layout written into MOV files: the source's own (MOV stores any layout), or mono/stereo.
+    static func movLayout(_ media: OpenedMedia) -> Data {
+        var layout = AudioChannelLayout()
+        switch media.channels {
+        case 1: layout.mChannelLayoutTag = kAudioChannelLayoutTag_Mono
+        case 2: layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
+        default: return media.sourceLayout ?? media.map.descriptionLayout()
+        }
+        return Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)
     }
 
     // MARK: Video → MOV (picture and other tracks copied)
@@ -267,13 +297,13 @@ enum MobileEngine {
             if reader.canAdd(out), writer.canAdd(input) { reader.add(out); writer.add(input); pairs.append((out, input, false)) }
         }
         // The levelled first audio track: uncompressed PCM at the source rate.
-        let decoded = AVAssetReaderTrackOutput(track: media.audioTrack, outputSettings: MediaReader.decodeSettings(sourceChannels: media.sourceChannels))
+        let decoded = AVAssetReaderTrackOutput(track: media.audioTrack, outputSettings: MediaReader.decodeSettings(media))
         decoded.alwaysCopiesSampleData = false
-        var layout = AudioChannelLayout(); layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
-        let audioSettings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: media.sampleRate, AVNumberOfChannelsKey: 2,
+        let layout = movLayout(media)
+        let audioSettings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: media.sampleRate, AVNumberOfChannelsKey: media.channels,
                                             AVLinearPCMBitDepthKey: media.isFloat ? 32 : 24, AVLinearPCMIsFloatKey: media.isFloat,
                                             AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
-                                            AVChannelLayoutKey: Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)]
+                                            AVChannelLayoutKey: layout]
         let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         audioInput.expectsMediaDataInRealTime = false
         guard reader.canAdd(decoded), writer.canAdd(audioInput) else { throw cueError("CueLevel can't write this video's audio.") }
@@ -315,16 +345,14 @@ enum MobileEngine {
                                 guard let buffer = pair.0.copyNextSampleBuffer() else { finished.value = true; pair.1.markAsFinished(); done.resume(); return }
                                 var toAppend = buffer
                                 if pair.2 {
-                                    guard let decodedPair = MediaReader.stereo(from: buffer), !decodedPair.left.isEmpty else { continue }
-                                    var l = decodedPair.left, r = decodedPair.right
-                                    processor.process(left: &l, right: &r)
-                                    if !media.isFloat { let m: Float = 8_388_607.0 / 8_388_608.0; for i in l.indices { l[i] = max(-1, min(m, l[i])); r[i] = max(-1, min(m, r[i])) } }
-                                    l.withUnsafeBufferPointer { lp in r.withUnsafeBufferPointer { rp in
-                                        meter.add(left: lp.baseAddress!, right: rp.baseAddress!, frames: l.count)
-                                        wave.add(left: lp.baseAddress!, right: rp.baseAddress!, frames: l.count)
-                                    } }
-                                    frames.value += l.count; progress(frames.value)
-                                    guard let made = makeStereoBuffer(left: l, right: r, rate: media.sampleRate, time: CMSampleBufferGetPresentationTimeStamp(buffer)) else {
+                                    guard var data = MediaReader.planar(from: buffer), let count = data.first?.count, count > 0 else { continue }
+                                    guard data.count == media.channels else { failure.value = cueError("CueLevel couldn't keep this video's \(media.map.name) channels apart."); continue }
+                                    processor.process(&data)
+                                    if !media.isFloat { clampForInteger(&data) }
+                                    meter.add(data)
+                                    wave.add(data)
+                                    frames.value += count; progress(frames.value)
+                                    guard let made = makeBuffer(data, rate: media.sampleRate, layout: layout, time: CMSampleBufferGetPresentationTimeStamp(buffer)) else {
                                         failure.value = cueError("CueLevel couldn't write the levelled audio."); continue
                                     }
                                     toAppend = made
@@ -343,17 +371,22 @@ enum MobileEngine {
         if writer.status != .completed { throw writer.error ?? cueError("The video could not be written.") }
     }
 
-    static func makeStereoBuffer(left: [Float], right: [Float], rate: Double, time: CMTime) -> CMSampleBuffer? {
-        let frames = left.count
+    /// An interleaved float sample buffer of `channels` with the given layout.
+    static func makeBuffer(_ channels: [[Float]], rate: Double, layout: Data, time: CMTime) -> CMSampleBuffer? {
+        let n = channels.count, frames = channels.first?.count ?? 0
+        guard n > 0, frames > 0 else { return nil }
+        let bytesPerFrame = UInt32(4 * n)
         var asbd = AudioStreamBasicDescription(mSampleRate: rate, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-                                               mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
-        var layout = AudioChannelLayout(); layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
+                                               mBytesPerPacket: bytesPerFrame, mFramesPerPacket: 1, mBytesPerFrame: bytesPerFrame, mChannelsPerFrame: UInt32(n), mBitsPerChannel: 32, mReserved: 0)
         var format: CMAudioFormatDescription?
-        guard CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: MemoryLayout<AudioChannelLayout>.size, layout: &layout,
-                                             magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format) == noErr, let format else { return nil }
-        var interleaved = [Float](repeating: 0, count: frames * 2)
-        for i in 0..<frames { interleaved[2 * i] = left[i]; interleaved[2 * i + 1] = right[i] }
-        let bytes = frames * 8
+        let made = layout.withUnsafeBytes { raw in
+            CMAudioFormatDescriptionCreate(allocator: nil, asbd: &asbd, layoutSize: raw.count, layout: raw.baseAddress!.assumingMemoryBound(to: AudioChannelLayout.self),
+                                           magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
+        }
+        guard made == noErr, let format else { return nil }
+        var interleaved = [Float](repeating: 0, count: frames * n)
+        for c in 0..<n { channels[c].withUnsafeBufferPointer { src in for i in 0..<frames { interleaved[i * n + c] = src[i] } } }
+        let bytes = frames * n * 4
         var block: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: bytes, blockAllocator: nil, customBlockSource: nil,
                                                  offsetToData: 0, dataLength: bytes, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block) == noErr, let block else { return nil }

@@ -111,6 +111,10 @@ struct ProcessingSettings: Codable, Equatable, Sendable {
     var clipGain: [GainRegion]? = nil
     /// Per-cue in/out points, edge fades and markers (1.5). Set from the cue when it is processed.
     var edit: CueEdit? = nil
+    /// 2.1: fold surround sources down to stereo. Off unless the person turns it on: the levelled copy keeps the source's
+    /// channels (mono stays mono, 5.1 stays 5.1).
+    var foldToStereo: Bool? = nil
+    var foldsSurround: Bool { foldToStereo ?? false }
     mutating func setMode(_ newMode: ContentMode) {
         mode = newMode
         var leveling = LevelerSettings(); leveling.apply(newMode == .music ? .gentle : newMode == .voice ? .strong : .balanced); leveling.enabled = newMode != .music; levelerOptions = leveling
@@ -278,11 +282,21 @@ struct Analysis: Codable, Sendable {
     var stereo: StereoStats? = nil
     /// Short-term loudness (LUFS) across the cue, evenly spaced, at most 600 points.
     var loudnessCurve: [Float]? = nil
+    /// 2.1: true when a surround source was measured folded to stereo (Fold surround to stereo is on). Otherwise every
+    /// channel is measured and kept.
+    var foldedToStereo: Bool? = nil
+    /// 2.1: channels the measurement used. nil for measurements by older versions (always stereo, mono as dual mono).
+    var channelsMeasured: Int? = nil
+    /// True when this measurement used the channels the setting asks for, so it can be reused for levelling.
+    func matchesChannels(foldingSurround fold: Bool) -> Bool {
+        channelsMeasured == (info.channels > 2 && fold ? 2 : info.channels)
+    }
     /// Plain-language source checks: clipping, DC offset, phase, silence, surround and extra tracks.
     var sourceFindings: [String] {
         var notes: [String] = []
         func f(_ v: Double) -> String { String(format: "%.1f", v) }
-        let clipLevel = info.channels == 1 ? -3.11 : -0.1   // mono is measured after CueLevel's -3 dB dual-mono conversion
+        // 2.1: mono is measured as mono (it used to be converted to dual mono at −3 dB first, which lowered its peaks).
+        let clipLevel = -0.1
         if let peak = levels.samplePeak, peak >= clipLevel, let count = levels.peakCount, count >= 4 {
             notes.append("Probable clipping: \(Int(count)) samples sit at full scale. Levelling cannot remove existing distortion.")
         }
@@ -298,7 +312,7 @@ struct Analysis: Codable, Sendable {
         }
         if let s = stereo, s.headSilence >= 2 { notes.append("\(f(s.headSilence)) s of silence at the start. Check the cue's trigger timing.") }
         if let s = stereo, s.tailSilence >= 2 { notes.append("\(f(s.tailSilence)) s of silence at the end.") }
-        if info.channels > 2 { notes.append("Surround source (\(info.channels) channels) is downmixed to stereo. Downmixing is not lossless.") }
+        if info.channels > 2, foldedToStereo == true { notes.append("Surround source (\(info.channels) channels) is folded to stereo, as set in Settings. Folding mixes the channels together, so it isn't lossless.") }
         if let n = info.audioStreams, n > 1 { notes.append("\(n) audio tracks. The first is levelled; Lossless mode copies the others untouched, other modes drop them.") }
         return notes
     }

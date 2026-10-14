@@ -7,13 +7,19 @@ import Foundation
 /// Polarity fix for a channel wired out of phase (1.6).
 enum PolarityFix: String, Codable, CaseIterable, Sendable {
     case none = "Normal", left = "Flip left", right = "Flip right", both = "Flip both"
-    var filter: String? {
+    var filter: String? { filterExpression(channels: 2) }
+    /// Flips the first (left) and/or second (right) channel; any other channels pass unchanged (2.1: mono and surround).
+    func filterExpression(channels n: Int) -> String? {
+        let flip: Set<Int>
         switch self {
         case .none: return nil
-        case .left: return "aeval=exprs='-val(0)|val(1)':c=stereo"
-        case .right: return "aeval=exprs='val(0)|-val(1)':c=stereo"
-        case .both: return "aeval=exprs='-val(0)|-val(1)':c=stereo"
+        case .left: flip = [0]
+        case .right: flip = n > 1 ? [1] : []
+        case .both: flip = n > 1 ? [0, 1] : [0]
         }
+        guard !flip.isEmpty else { return nil }
+        let exprs = (0..<max(1, n)).map { flip.contains($0) ? "-val(\($0))" : "val(\($0))" }.joined(separator: "|")
+        return "aeval=exprs='\(exprs)':c=same"
     }
 }
 
@@ -59,7 +65,8 @@ struct CueEdit: Codable, Equatable, Sendable {
         removeDC = try c.decodeIfPresent(Bool.self, forKey: .removeDC) ?? false
         polarity = (try? c.decodeIfPresent(PolarityFix.self, forKey: .polarity)) ?? PolarityFix.none
     }
-    var repairFilters: [String] { (removeDC ? ["highpass=f=5:p=1"] : []) + (polarity.filter.map { [$0] } ?? []) }
+    var repairFilters: [String] { repairFilters(channels: 2) }
+    func repairFilters(channels: Int) -> [String] { (removeDC ? ["highpass=f=5:p=1"] : []) + (polarity.filterExpression(channels: channels).map { [$0] } ?? []) }
     var hasRepairs: Bool { removeDC || polarity != .none }
 
     func end(duration: Double) -> Double { min(duration, max(inPoint + 0.1, outPoint ?? duration)) }
@@ -120,11 +127,12 @@ struct CueEdit: Codable, Equatable, Sendable {
 
 extension ProcessingSettings {
     /// Everything edited by hand on this cue, applied before any processing: clip gain, then in/out points and edge fades.
-    func editFilters(duration: Double, sampleRate: Int, canCut: Bool) -> String? {
+    /// `channels` (2.1): how many channels the audio has at this point, so repairs and section effects fit mono and surround.
+    func editFilters(duration: Double, sampleRate: Int, canCut: Bool, channels: Int = 2, layout: String? = nil) -> String? {
         var list: [String] = []
-        if let edit { list += edit.repairFilters }
+        if let edit { list += edit.repairFilters(channels: channels) }
         if let clip = ClipGain.filter(clipGain) { list.append(clip) }
-        if let effects = ClipGain.effectsFilter(clipGain) { list.append(effects) }
+        if let effects = ClipGain.effectsFilter(clipGain, channels: channels, layout: layout) { list.append(effects) }
         if let edit { list += edit.filters(duration: duration, sampleRate: sampleRate, canCut: canCut) }
         return list.isEmpty ? nil : list.joined(separator: ",")
     }
