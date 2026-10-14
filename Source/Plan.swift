@@ -7,17 +7,6 @@ import Foundation
 enum CueStage: Equatable {
     case waiting, working, measured, levelled, alreadyGood, needsLook, failed, stopped
 
-    init(_ job: CueJob) {
-        switch job.status {
-        case .queued: self = .waiting
-        case .working: self = .working
-        case .analyzed: self = .measured
-        case .ready: self = job.alreadyGood != nil ? .alreadyGood : .levelled
-        case .review: self = .needsLook
-        case .failed: self = .failed
-        case .cancelled: self = .stopped
-        }
-    }
     var title: String {
         switch self {
         case .waiting: return "Waiting"
@@ -135,7 +124,7 @@ struct CuePlan: Equatable {
                               tone: plan.shortfall > 0.05 || plan.limiting > 0.05 ? .changed : .good, isOn: true, control: nil))
 
         let predictedPeak = min(levels.truePeak + plan.gain, plan.limiting > 0.05 ? settings.peak : .infinity)
-        let looksGood = Workspace.alreadyGoodReason(analysis: analysis, target: settings.target, peak: settings.peak,
+        let looksGood = cueAlreadyGoodReason(analysis: analysis, target: settings.target, peak: settings.peak,
                                                     autoSections: likelyUneven && evenOut ? 1 : 0, hasEdits: handEdits || edit.hasRepairs, library: library, mode: settings.mode)
         return CuePlan(steps: steps, gain: plan.gain, shortfall: plan.shortfall, limiting: plan.limiting,
                        predictedLoudness: levels.integrated + plan.gain, predictedPeak: predictedPeak,
@@ -146,4 +135,20 @@ struct CuePlan: Equatable {
 extension ContentMode {
     /// What the operator sees. The raw values stay as they are because sessions and the reference library store them.
     var label: String { switch self { case .music: return "Music"; case .mixed: return "Music + voice"; case .voice: return "Voice" } }
+}
+
+/// Why a cue can be left as it is (1.8), or nil when it needs levelling.
+func cueAlreadyGoodReason(analysis: Analysis, target: Double, peak: Double, autoSections: Int, hasEdits: Bool,
+                          library: ReferenceLibrary, mode: ContentMode) -> String? {
+    let levels = analysis.levels
+    guard abs(levels.integrated - target) <= 1.0, levels.truePeak <= peak, autoSections == 0, !hasEdits else { return nil }
+    let problems = analysis.sourceFindings.filter { $0.contains("clipping") || $0.contains("DC offset") || $0.contains("out of phase") }
+    guard problems.isEmpty else { return nil }
+    func f(_ v: Double) -> String { String(format: "%.1f", v).replacingOccurrences(of: "-", with: "−") }
+    var parts = ["\(f(levels.integrated)) LUFS, within 1 LU of \(f(target))", "peaks \(f(levels.truePeak)) dBTP"]
+    if let spread = analysis.loudnessCurve.flatMap({ LoudnessProfile(shortTerm: $0.map(Double.init)) })?.spread {
+        let good = library.span(for: mode)?.spread
+        parts.append(good.map { "moves \(f(spread)) LU (good \(mode.label): \(f($0.lowerBound))–\(f($0.upperBound)))" } ?? "moves \(f(spread)) LU, nothing to even out")
+    }
+    return parts.joined(separator: " · ")
 }

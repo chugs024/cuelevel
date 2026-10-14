@@ -18,7 +18,11 @@ cp -R "Reference Library" "$SCRATCH/outputs/CueLevel/Reference Library"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "testsrc2=s=640x360:r=25:d=6" -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=6" \
   -af "volume=-14dB" -c:v mpeg4 -q:v 5 -c:a aac -b:a 192k -shortest "$SCRATCH/work/test.mp4"
 echo "== Engine, reference, lossless and update tests"
-LIB=(Source/AudioEngine.swift Source/ClipGain.swift Source/CueEdit.swift Source/Transcript.swift Source/ReferenceLibrary.swift Source/Workspace.swift Source/Updater.swift Source/Plan.swift)
+LIB=(Source/Model.swift Source/AudioEngine.swift Source/ClipGain.swift Source/CueEdit.swift Source/Transcript.swift Source/ReferenceLibrary.swift Source/Workspace.swift Source/Updater.swift Source/Plan.swift)
 xcrun swiftc -O $T $LIB Tests/tests.swift $FW -o "$SCRATCH/cuelevel-tests"
 (cd "$SCRATCH" && ./cuelevel-tests)
+echo "== iPhone and iPad engine vs FFmpeg"
+MOB=(Source/Model.swift Source/AudioEngine.swift Source/ClipGain.swift Source/CueEdit.swift Source/ReferenceLibrary.swift Source/Plan.swift Mobile/Engine/*.swift)
+xcrun swiftc -O $T $MOB Tests/mobile-engine-tests.swift -framework AVFoundation -framework Accelerate -framework CoreMedia -o "$SCRATCH/mobile-tests"
+(cd "$SCRATCH" && ./mobile-tests)
 echo "ALL CHECKS PASSED"

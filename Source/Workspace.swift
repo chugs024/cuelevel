@@ -644,17 +644,7 @@ struct ExportReport: Codable {
     /// nothing for Even out to fix, no hand edits, and no clipping, DC offset or phase problem.
     nonisolated static func alreadyGoodReason(analysis: Analysis, target: Double, peak: Double, autoSections: Int, hasEdits: Bool,
                                               library: ReferenceLibrary, mode: ContentMode) -> String? {
-        let levels = analysis.levels
-        guard abs(levels.integrated - target) <= 1.0, levels.truePeak <= peak, autoSections == 0, !hasEdits else { return nil }
-        let problems = analysis.sourceFindings.filter { $0.contains("clipping") || $0.contains("DC offset") || $0.contains("out of phase") }
-        guard problems.isEmpty else { return nil }
-        func f(_ v: Double) -> String { String(format: "%.1f", v).replacingOccurrences(of: "-", with: "−") }
-        var parts = ["\(f(levels.integrated)) LUFS, within 1 LU of \(f(target))", "peaks \(f(levels.truePeak)) dBTP"]
-        if let spread = analysis.loudnessCurve.flatMap({ LoudnessProfile(shortTerm: $0.map(Double.init)) })?.spread {
-            let good = library.span(for: mode)?.spread
-            parts.append(good.map { "moves \(f(spread)) LU (good \(mode.label): \(f($0.lowerBound))–\(f($0.upperBound)))" } ?? "moves \(f(spread)) LU, nothing to even out")
-        }
-        return parts.joined(separator: " · ")
+        cueAlreadyGoodReason(analysis: analysis, target: target, peak: peak, autoSections: autoSections, hasEdits: hasEdits, library: library, mode: mode)
     }
 
     // MARK: Reference shapes — what good sounds like over time (1.7)
@@ -1135,4 +1125,18 @@ struct ExportReport: Codable {
         }
     }
     func shutdown() { token?.cancel(); player.pause(); persist() }
+}
+
+extension CueStage {
+    init(_ job: CueJob) {
+        switch job.status {
+        case .queued: self = .waiting
+        case .working: self = .working
+        case .analyzed: self = .measured
+        case .ready: self = job.alreadyGood != nil ? .alreadyGood : .levelled
+        case .review: self = .needsLook
+        case .failed: self = .failed
+        case .cancelled: self = .stopped
+        }
+    }
 }

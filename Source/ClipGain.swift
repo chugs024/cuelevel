@@ -355,14 +355,3 @@ struct TimeView: Equatable, Sendable {
         v.start = v.resolved(duration: duration).start; return v
     }
 }
-
-extension AudioEngine {
-    /// Integrated loudness of one section, after the given clip-gain regions (sections shorter than 0.4 s cannot be gated).
-    static func sectionLoudness(_ input: URL, info: MediaInfo, start: Double, end: Double, regions: [GainRegion], token: Cancellation) throws -> Double {
-        guard end - start >= 0.4 else { throw cueError("Select at least half a second to measure a section.") }
-        var filters: [String] = []
-        if let clip = ClipGain.filter(regions) { filters.append(clip) }
-        filters.append(ClipGain.trim(start: start, end: end, sampleRate: info.sampleRate ?? 48000))
-        return try measure(input, token: token, duration: end - start, filters: filters.joined(separator: ",")).integrated
-    }
-}
