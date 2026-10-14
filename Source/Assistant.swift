@@ -220,8 +220,8 @@ struct AssistantPanel: View {
             summaryRow("Content", nil) {
                 Menu {
                     ForEach(ContentMode.allCases) { mode in Button(mode.label) { model.changeMode(mode) } }
-                } label: { Text(model.settings.mode.label).font(.system(size: 12, weight: .medium)) }
-                    .menuStyle(.borderlessButton).fixedSize().disabled(model.busy)
+                } label: { Text(model.settings.mode.label).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.bone) }
+                    .menuStyle(.borderlessButton).fixedSize().disabled(model.busy).tint(Theme.bone)
                     .help("What kind of cues these are. CueLevel compares them with your good references of the same kind.")
             }
             summaryRow("Target", "\(lufs(model.settings.target)) LUFS, peaks under \(lufs(model.settings.peak))") { EmptyView() }

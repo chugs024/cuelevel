@@ -188,13 +188,27 @@ struct ExportReport: Codable {
     }
     func changeMode(_ mode: ContentMode) { settings.setMode(mode) }
     func addFiles() {
-        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
-        panel.message = "Add audio or video cues. Files stay on your Mac."
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
+        panel.message = "Add audio or video cues, or a folder of them. Files stay on your Mac."
         if panel.runModal() == .OK { add(panel.urls) }
+    }
+    /// Files as given, with any folder replaced by the audio and video files inside it (2.0.1: folders can be dropped).
+    static func expandFolders(_ urls: [URL]) -> [URL] {
+        urls.flatMap { url -> [URL] in
+            var isDirectory: ObjCBool = false
+            guard url.isFileURL, FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue,
+                  !url.pathExtension.lowercased().hasSuffix("app") else { return [url] }
+            let walker = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants])
+            var found: [URL] = []
+            while let item = walker?.nextObject() as? URL {
+                if mediaExtensions.contains(item.pathExtension.lowercased()), (try? item.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true { found.append(item) }
+            }
+            return found.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        }
     }
     func add(_ urls: [URL]) {
         var added: [UUID] = []
-        for url in urls where url.isFileURL {
+        for url in Self.expandFolders(urls) where url.isFileURL {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { continue }
             let normalized = url.standardizedFileURL.resolvingSymlinksInPath()

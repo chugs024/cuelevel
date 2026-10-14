@@ -30,6 +30,23 @@
 	<string>© 2026 CueLevel. All rights reserved.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>CueLevel transcribes cues on this Mac so you can find words and speakers. Audio never leaves the Mac.</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Audio or video cue</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.audio</string>
+				<string>public.movie</string>
+				<string>public.folder</string>
+			</array>
+		</dict>
+	</array>
 	<key>CueLevelUpdateFeed</key>
 	<string>https://raw.githubusercontent.com/chugs024/cuelevel-updates/main/appcast.json</string>
 </dict>

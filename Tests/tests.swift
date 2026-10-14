@@ -573,6 +573,14 @@ func cue(_ lufs: Double, tp: Double, lra: Double, crest: Double?) -> Measurement
         stageJob.status = .review; check(CueStage(stageJob).wantsAttention, "needs a look")
         check(ContentMode.mixed.label == "Music + voice" && ContentMode.music.label == "Music", "labels")
         print("PASS: assistant plan and stages")
+
+        // 33. 2.0.1: a dropped folder adds the audio and video inside it (hidden files and other types skipped).
+        let dropped = area.appendingPathComponent("dropped folder")
+        try FileManager.default.createDirectory(at: dropped.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        for name in ["b.wav", "a.txt", "sub/c.MOV", ".hidden.wav", "a 10.mp3", "a 2.mp3"] { try Data([0]).write(to: dropped.appendingPathComponent(name)) }
+        let expanded = Workspace.expandFolders([dropped, speechLike]).map { $0.lastPathComponent }
+        check(expanded == ["a 2.mp3", "a 10.mp3", "b.wav", "c.MOV", speechLike.lastPathComponent], "folder expanded: \(expanded)")
+        print("PASS: folder drops")
         print("ALL 1.1 TESTS PASSED")
     }
 }

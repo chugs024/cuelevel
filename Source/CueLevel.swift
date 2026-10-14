@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftUI
+import Combine
 import AVKit
 import UniformTypeIdentifiers
 
@@ -104,15 +105,15 @@ struct ContentView: View {
             if model.busy && model.canCancel {
                 Button { model.cancel() } label: { Label("Stop", systemImage: "stop.fill") }.buttonStyle(CLButton(kind: .danger)).keyboardShortcut(".")
             } else {
-                let todo = model.jobs.filter { !CueStage($0).isDone }.count
-                Button(todo == 0 ? "All levelled" : "Level all \(todo)") { model.quickLevelAll() }.buttonStyle(CLButton())
+                let todo = model.jobs.filter { !CueStage($0).isDone || $0.output == nil }.count
+                Button(model.jobs.isEmpty ? "Level all" : todo == 0 ? "All levelled" : "Level all \(todo)") { model.quickLevelAll() }.buttonStyle(CLButton())
                     .disabled(model.busy || todo == 0)
             }
             Menu {
                 Button("Open the Levelled folder") { model.revealOutputFolder() }
                 Button("Save a copy of every levelled cue…") { model.exportAll() }.disabled(model.completedCount == 0)
                 Button("Save show report…") { model.exportShowReport() }.disabled(model.jobs.allSatisfy { $0.analysis == nil })
-            } label: { Text("Deliver") }.menuStyle(.borderlessButton).fixedSize().disabled(model.busy)
+            } label: { Text("Deliver").foregroundStyle(Theme.bone) }.menuStyle(.borderlessButton).fixedSize().disabled(model.busy).tint(Theme.bone)
                 .padding(.horizontal, 10).padding(.vertical, 5).background(RoundedRectangle(cornerRadius: 7).fill(Theme.raised)).overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.line2))
         }
         .padding(.leading, 86).padding(.trailing, 16).frame(height: 52)
@@ -149,8 +150,10 @@ struct ContentView: View {
                 Text("Cues").sectionTitle()
                 Text(model.jobs.isEmpty ? "None yet" : "\(model.jobs.count) cue\(model.jobs.count == 1 ? "" : "s"), \(done) done").font(.system(size: 12)).foregroundStyle(Theme.muted).monospacedDigit()
                 Spacer()
-                Button { model.removeSelected() } label: { Image(systemName: "minus") }.buttonStyle(CLButton(kind: .ghost))
-                    .help("Remove the selected cue from the list (the file stays where it is)").disabled(model.busy || model.selection == nil)
+                if !model.jobs.isEmpty {
+                    Button { model.removeSelected() } label: { Image(systemName: "minus") }.buttonStyle(CLButton(kind: .ghost))
+                        .help("Remove the selected cue from the list (the file stays where it is)").disabled(model.busy || model.selection == nil)
+                }
             }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 10)
             if !model.jobs.isEmpty {
                 HStack(spacing: 6) {
@@ -784,7 +787,18 @@ struct WindowChrome: NSViewRepresentable {
     }
 }
 
+/// Files opened from Finder ("Open With", or dropped on the Dock icon) are handed to the window.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    static var pending: [URL] = []
+    static let opened = Notification.Name("CueLevelOpenedFiles")
+    func application(_ application: NSApplication, open urls: [URL]) {
+        AppDelegate.pending += urls
+        NotificationCenter.default.post(name: AppDelegate.opened, object: nil)
+    }
+}
+
 @main struct CueLevelApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = Workspace()
     @StateObject private var updater = Updater()
     init() {
@@ -821,6 +835,10 @@ struct WindowChrome: NSViewRepresentable {
             ContentView().environmentObject(model).environmentObject(updater)
                 .onAppear { updater.start() }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.shutdown() }
+                .onReceive(NotificationCenter.default.publisher(for: AppDelegate.opened).receive(on: RunLoop.main).prepend(Notification(name: AppDelegate.opened))) { _ in
+                    let urls = AppDelegate.pending; AppDelegate.pending = []
+                    if !urls.isEmpty { model.add(urls) }
+                }
         }.defaultSize(width: 1440, height: 900).windowStyle(.hiddenTitleBar)
             .commands {
                 CommandGroup(replacing: .appInfo) {
