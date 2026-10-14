@@ -110,7 +110,7 @@ struct ReferenceLibrary: Sendable {
     }
     var summary: String {
         guard !isEmpty else { return "No reference library loaded." }
-        let parts = ContentMode.allCases.map { mode -> String in "\(references(for: mode).count) \(mode.rawValue)" }
+        let parts = ContentMode.allCases.map { mode -> String in "\(references(for: mode).count) \(mode.label)" }
         return "\(records.count) approved reference\(records.count == 1 ? "" : "s") · " + parts.joined(separator: " · ")
     }
 
@@ -151,7 +151,7 @@ struct ReferenceLibrary: Sendable {
     /// Validates a chosen library folder, then copies only its measurement files into CueLevel's own data folder.
     static func install(from source: URL, into destination: URL) throws -> ReferenceLibrary {
         let validated = try load(from: source)
-        guard !validated.isEmpty else { throw cueError("The library contains no references with a confirmed Audio only, Audio + voice or Voice category.") }
+        guard !validated.isEmpty else { throw cueError("The library contains no references with a confirmed Music, Music + voice or Voice category.") }
         if source.standardizedFileURL.resolvingSymlinksInPath() == destination.standardizedFileURL.resolvingSymlinksInPath() { return validated }
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         try Data(contentsOf: source.appendingPathComponent(libraryFile)).write(to: destination.appendingPathComponent(libraryFile), options: .atomic)
@@ -302,20 +302,20 @@ struct ReferenceCheck: Sendable {
         func f(_ value: Double) -> String { String(format: "%.1f", value) }
         func r(_ range: ClosedRange<Double>) -> String { "\(f(range.lowerBound)) to \(f(range.upperBound))" }
         guard let span = found else {
-            findings.append(ReferenceFinding(text: "No approved \(mode.rawValue) references are in the library, so no recommendation is made. Add an approved \(mode.rawValue) cue, or choose the content type that fits this cue.", needsAttention: true))
+            findings.append(ReferenceFinding(text: "No approved \(mode.label) references are in the library, so no recommendation is made. Add an approved \(mode.label) cue, or choose the content type that fits this cue.", needsAttention: true))
             return
         }
         let widest = span.loudnessRange.upperBound
         let rangeExcess = cue.loudnessRange - (widest + Self.rangeAllowance)
         if rangeExcess > 0 {
             if mode == .music {
-                findings.append(ReferenceFinding(text: "Loudness range \(f(cue.loudnessRange)) LU is wider than the Audio only references (\(r(span.loudnessRange)) LU). This may be intentional musical dynamics, so leveling is not recommended automatically. Listen through quiet and loud passages.", needsAttention: true))
+                findings.append(ReferenceFinding(text: "Loudness range \(f(cue.loudnessRange)) LU is wider than the Music references (\(r(span.loudnessRange)) LU). This may be intentional musical dynamics, so leveling is not recommended automatically. Listen through quiet and loud passages.", needsAttention: true))
             } else {
                 levelerStyle = rangeExcess > 3 ? .balanced : .gentle
-                findings.append(ReferenceFinding(text: "Loudness range \(f(cue.loudnessRange)) LU is wider than the \(mode.rawValue) references (\(r(span.loudnessRange)) LU). \(levelerStyle!.rawValue) automatic leveling is suggested.", needsAttention: true))
+                findings.append(ReferenceFinding(text: "Loudness range \(f(cue.loudnessRange)) LU is wider than the \(mode.label) references (\(r(span.loudnessRange)) LU). \(levelerStyle!.rawValue) automatic leveling is suggested.", needsAttention: true))
             }
         } else {
-            findings.append(ReferenceFinding(text: "Loudness range \(f(cue.loudnessRange)) LU is consistent with the \(mode.rawValue) references (\(r(span.loudnessRange)) LU).", needsAttention: false))
+            findings.append(ReferenceFinding(text: "Loudness range \(f(cue.loudnessRange)) LU is consistent with the \(mode.label) references (\(r(span.loudnessRange)) LU).", needsAttention: false))
         }
         if let crest = cue.crestFactor, let crests = span.crest {
             if crest > crests.upperBound + Self.crestAllowance {
@@ -376,7 +376,7 @@ struct ReferenceCheck: Sendable {
 
     /// Plain-text lines for reports.
     var summaryLines: [String] {
-        var lines = ["Reference check · \(mode.rawValue) · \(span?.count ?? 0) reference\(span?.count == 1 ? "" : "s") · \(approach?.rawValue ?? "No recommendation")"]
+        var lines = ["Reference check · \(mode.label) · \(span?.count ?? 0) reference\(span?.count == 1 ? "" : "s") · \(approach?.rawValue ?? "No recommendation")"]
         lines += findings.map(\.text)
         return lines
     }

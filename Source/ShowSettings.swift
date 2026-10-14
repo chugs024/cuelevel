@@ -55,7 +55,7 @@ struct ShowSettingsSheet: View {
         }
         section {
             Text("What levelling does").sectionTitle()
-            Toggle(isOn: $model.evenOut) { switchLabel("Even out loud and quiet stretches", "Stretches that move more than your good references are turned back in the nearest pause, without fades. Turn off for music.") }.toggleStyle(CLSwitch())
+            Toggle(isOn: $model.evenOut) { switchLabel("Even out loud and quiet stretches", "Stretches that move more than your good references are turned back in the nearest pause, without fades. Music is left as it is: cues set to Music, and cues that play continuously like a song.") }.toggleStyle(CLSwitch())
             Toggle(isOn: $model.autoTrim) { switchLabel("Trim silence at the start and end", "Audio is cut; video keeps its length and the silence is muted instead.") }.toggleStyle(CLSwitch())
         }
         section {
@@ -73,10 +73,12 @@ struct ShowSettingsSheet: View {
         }
         section {
             Text("File type").sectionTitle()
-            Menu {
-                ForEach(OutputFormat.allCases) { format in Button(format.rawValue) { model.settings.format = format } }
-            } label: { HStack { Text("Save as").foregroundStyle(Theme.text); Spacer(); Text(model.settings.format.rawValue).foregroundStyle(Theme.bone) } }
-                .menuStyle(.borderlessButton).font(.system(size: 12.5))
+            HStack {
+                Text("Save as").font(.system(size: 12.5)).foregroundStyle(Theme.text)
+                Spacer()
+                Picker("Save as", selection: $model.settings.format) { ForEach(OutputFormat.allCases) { Text($0.rawValue).tag($0) } }
+                    .labelsHidden().fixedSize()
+            }
             Text(formatHint).hint()
         }
         section {
@@ -200,7 +202,7 @@ struct ShowSettingsSheet: View {
                     }.padding(.top, 4)
                 } label: { Text("Catalogue (\(model.references.records.count))").font(.system(size: 12.5)).foregroundStyle(Theme.text) }
                 if let span = model.references.span(for: model.settings.mode), let spread = span.spread {
-                    Text("Good \(model.settings.mode.rawValue) moves \(String(format: "%.1f–%.1f", spread.lowerBound, spread.upperBound)) LU between quieter and louder stretches (\(span.shapeCount) reference\(span.shapeCount == 1 ? "" : "s")). Even out keeps cues within ±\(String(format: "%g", model.references.evenOutTolerance(for: model.settings.mode))) dB.").hint()
+                    Text("Good \(model.settings.mode.label) moves \(String(format: "%.1f–%.1f", spread.lowerBound, spread.upperBound)) LU between quieter and louder stretches (\(span.shapeCount) reference\(span.shapeCount == 1 ? "" : "s")). Even out keeps cues within ±\(String(format: "%g", model.references.evenOutTolerance(for: model.settings.mode))) dB.").hint()
                 }
                 if model.referencesMissingShapes > 0 {
                     Button("Measure reference shapes… (\(model.referencesMissingShapes) missing)") { model.measureReferenceShapes() }.buttonStyle(CLButton(kind: .ghost)).disabled(model.busy)

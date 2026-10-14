@@ -640,7 +640,7 @@ struct ExportReport: Codable {
         var parts = ["\(f(levels.integrated)) LUFS, within 1 LU of \(f(target))", "peaks \(f(levels.truePeak)) dBTP"]
         if let spread = analysis.loudnessCurve.flatMap({ LoudnessProfile(shortTerm: $0.map(Double.init)) })?.spread {
             let good = library.span(for: mode)?.spread
-            parts.append(good.map { "moves \(f(spread)) LU (good \(mode.rawValue): \(f($0.lowerBound))–\(f($0.upperBound)))" } ?? "moves \(f(spread)) LU, nothing to even out")
+            parts.append(good.map { "moves \(f(spread)) LU (good \(mode.label): \(f($0.lowerBound))–\(f($0.upperBound)))" } ?? "moves \(f(spread)) LU, nothing to even out")
         }
         return parts.joined(separator: " · ")
     }
