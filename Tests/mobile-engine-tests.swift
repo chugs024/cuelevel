@@ -21,6 +21,14 @@ func videoDigest(_ url: URL) throws -> String {
     try AudioEngine.run(["-i", url.path, "-map", "0:v:0", "-c", "copy", "-f", "md5", "pipe:1"], token: Cancellation(), output: { box.data.append($0) })
     return String(decoding: box.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 }
+/// Integrated loudness from FFmpeg's ebur128 filter, the BS.1770 reference meter. (loudnorm, which the Mac app measures with,
+/// reads fast-decaying material such as stings up to about 0.4 LU lower; the device follows ebur128.)
+func referenceLoudness(_ url: URL) throws -> Double {
+    let log = try AudioEngine.run(["-i", url.path, "-map", "0:a:0", "-vn", "-af", "aformat=channel_layouts=stereo,ebur128", "-f", "null", "-"], token: Cancellation())
+    guard let block = log.range(of: "Integrated loudness:", options: .backwards),
+          let i = log[block.upperBound...].range(of: #"I:\s+(-?[0-9.]+)"#, options: .regularExpression) else { return .nan }
+    return Double(log[i].split(whereSeparator: { $0 == " " || $0 == ":" }).last.map(String.init) ?? "") ?? .nan
+}
 func sha(_ url: URL) throws -> String { SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined() }
 
 /// Compares the on-device analysis with FFmpeg's measurement of the same file.
@@ -30,8 +38,10 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
     let reference = try AudioEngine.measure(url, token: token, duration: info.duration)
     let (mobile, data) = try await MobileEngine.analyze(url)
     let m = mobile.levels
-    note("\(name): I \(f(m.integrated)) vs \(f(reference.integrated))   TP \(f(m.truePeak)) vs \(f(reference.truePeak))   LRA \(f(m.loudnessRange)) vs \(f(reference.loudnessRange))   peak \(f(m.samplePeak ?? 0)) vs \(f(reference.samplePeak ?? 0))")
-    check(near(m.integrated, reference.integrated, integrated), "\(name): integrated loudness matches FFmpeg")
+    let ebur = try referenceLoudness(url)
+    note("\(name): I \(f(m.integrated)) vs ebur128 \(f(ebur)) / loudnorm \(f(reference.integrated))   TP \(f(m.truePeak)) vs \(f(reference.truePeak))   LRA \(f(m.loudnessRange)) vs \(f(reference.loudnessRange))   peak \(f(m.samplePeak ?? 0)) vs \(f(reference.samplePeak ?? 0))")
+    check(near(m.integrated, ebur, max(integrated, 0.06)), "\(name): integrated loudness matches FFmpeg's ebur128 (\(m.integrated) vs \(ebur))")
+    check(near(m.integrated, reference.integrated, 0.6), "\(name): integrated loudness close to loudnorm (\(m.integrated) vs \(reference.integrated))")
     check(near(m.truePeak, reference.truePeak, truePeak), "\(name): true peak matches FFmpeg")
     check(near(m.loudnessRange, reference.loudnessRange, range), "\(name): loudness range matches FFmpeg")
     // FFmpeg measures astats after its graph resamples for loudnorm (192 kHz), so its "sample peak" is close to the true peak.
@@ -104,9 +114,10 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
             let out = try await MobileEngine.level(file("sting.wav"), analysis: sting, settings: st, directory: area.appendingPathComponent("Sting"))
             let outInfo = try AudioEngine.inspect(out.url, token: token)
             let ff = try AudioEngine.measure(out.url, token: token, duration: outInfo.duration)
-            note("sting levelled with \(regions.count) Even out sections: device \(f(out.levels.integrated)) vs FFmpeg \(f(ff.integrated)) LUFS, TP \(f(out.levels.truePeak)) vs \(f(ff.truePeak)), duration \(f(outInfo.duration))")
-            check(near(out.levels.integrated, ff.integrated, 0.15), "levelled sting: the device's verification agrees with FFmpeg")
-            check(near(ff.integrated, -18, 0.25), "levelled sting reaches the target (FFmpeg)")
+            let ebur = try referenceLoudness(out.url)
+            note("sting levelled with \(regions.count) Even out sections: device \(f(out.levels.integrated)) vs ebur128 \(f(ebur)) / loudnorm \(f(ff.integrated)) LUFS, TP \(f(out.levels.truePeak)) vs \(f(ff.truePeak)), duration \(f(outInfo.duration))")
+            check(near(out.levels.integrated, ebur, 0.1), "levelled sting: the device's verification agrees with ebur128")
+            check(near(ebur, -18, 0.1), "levelled sting reaches the target (ebur128)")
         }
 
         print("== Even out: same sections from either engine")
@@ -131,11 +142,11 @@ func compare(_ name: String, _ url: URL, integrated: Double = 0.15, truePeak: Do
         let levelledFF = try AudioEngine.measure(levelled.url, token: token, duration: levelledInfo.duration)
         note("speech → \(levelled.url.lastPathComponent): \(f(levelledFF.integrated)) LUFS, \(f(levelledFF.truePeak)) dBTP (gain \(String(format: "%+.2f", levelled.gainApplied ?? 0)), shortfall \(String(format: "%.2f", levelled.shortfall ?? 0)))")
         check(levelled.url.lastPathComponent == "speech_LVL-18.wav", "output named with the target")
-        check(near(levelledFF.integrated, settings.target - (levelled.shortfall ?? 0), 0.2), "levelled audio reaches the target (FFmpeg)")
+        check(near(try referenceLoudness(levelled.url), settings.target - (levelled.shortfall ?? 0), 0.1), "levelled audio reaches the target (ebur128)")
         check(levelledFF.truePeak <= settings.peak + 0.2, "levelled audio stays under the ceiling (FFmpeg)")
         check(levelledInfo.sampleRate == 44100 && levelledInfo.audioDescription.hasPrefix("pcm_s24le"), "WAV at the source rate, 24-bit")
         check(near(levelledInfo.duration, speech.info.duration, 0.01), "no samples added or lost")
-        check(near(levelled.levels.integrated, levelledFF.integrated, 0.15), "the device's own verification agrees with FFmpeg")
+        check(near(levelled.levels.integrated, try referenceLoudness(levelled.url), 0.1), "the device's own verification agrees with ebur128")
         // A gain change only: the output divided by the gain is the input, sample for sample (within 24-bit rounding).
         let gain = pow(10, (levelled.gainApplied ?? 0) / 20)
         let source = try AVAudioFile(forReading: file("speech.wav")), result = try AVAudioFile(forReading: levelled.url)
