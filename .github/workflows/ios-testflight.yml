@@ -65,6 +65,12 @@ jobs:
             -allowProvisioningUpdates -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" 2>&1 | tee export.log | grep -E "error:|EXPORT" || true
           grep -q "EXPORT SUCCEEDED" export.log || { grep -E "error:|Error" export.log | head -15 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
           ls -la build/export
+      - name: Keep the app for a manual upload (Transporter)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CueLevel-ipa
+          path: build/export/*.ipa
+          retention-days: 3
       - name: Upload to App Store Connect
         run: |
           # altool finds the key by ID in ~/private_keys.
