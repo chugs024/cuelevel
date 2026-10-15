@@ -112,12 +112,10 @@ struct CueLevelMobileApp: App {
         if args.contains("-confirm") {
             while store.cues.contains(where: { $0.state == .queued || $0.state == .measuring }) { try? await Task.sleep(nanoseconds: 300_000_000) }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            store.requestLevel(store.levelAllIDs)
+            store.confirming = store.levelAllIDs.filter { store.cue($0)?.analysis != nil }
         }
         if args.contains("-levelAll") {
             while store.cues.contains(where: { $0.state == .queued || $0.state == .measuring }) { try? await Task.sleep(nanoseconds: 300_000_000) }
-            // Screenshots: confirm CueLevel's suggestion for every cue, as a person would.
-            for c in store.cues where c.mode == nil { store.update(c.id) { $0.mode = store.suggestion(for: c).mode } }
             store.levelAll()
         }
         if let n = value("-select").flatMap(Int.init), store.cues.indices.contains(n - 1) {

@@ -78,9 +78,9 @@ jobs:
         run: |
           # GitHub keeps annotations to 4 KB each, 10 per step, 50 per job: small WebP images split into parts.
           mkdir -p build/ann; cd build/screens 2>/dev/null || exit 0
-          for f in ${SHOTS_LIST:-iphone-3-plan.png iphone-3b-confirm.png ipad-3b-confirm.png}; do
+          for f in ${SHOTS_LIST:-iphone-2-measured.png iphone-3-plan.png iphone-3b-confirm.png iphone-5-result-2.png}; do
             [[ -f "$f" ]] || continue
-            sips -s format jpeg -s formatOptions ${SHOT_QUALITY:-45} -Z ${SHOT_SIZE:-820} "$f" --out "../ann/${f%.png}.jpg" >/dev/null || continue
+            sips -s format jpeg -s formatOptions ${SHOT_QUALITY:-45} -Z ${SHOT_SIZE:-700} "$f" --out "../ann/${f%.png}.jpg" >/dev/null || continue
             base64 -i "../ann/${f%.png}.jpg" | tr -d '\n' | fold -w 3900 > "../ann/${f%.png}.b64"
           done
           python3 - <<'PY'
