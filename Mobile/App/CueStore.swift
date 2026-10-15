@@ -94,6 +94,9 @@ final class CueStore: ObservableObject {
     @Published var status = ""
     /// Set to open a cue's editor from outside its page (the build server's screenshots).
     @Published var openEditorFor: UUID?
+    /// Cues waiting for their content type to be confirmed before they're levelled (2.1).
+    @Published var confirming: [UUID] = []
+    private var contentWorker: Task<Void, Never>?
     let library: ReferenceLibrary
     private var worker: Task<Void, Never>?
     private var levelQueue: [UUID] = []
@@ -135,6 +138,7 @@ final class CueStore: ObservableObject {
         }
         remeasureChangedChannels()
         if cues.contains(where: { $0.state == .queued }) { startWorker() }
+        findContent()
     }
     /// Channels a cue should be measured and levelled with: the source's own, or 2 when surround is folded.
     func expectedChannels(_ analysis: Analysis) -> Int { analysis.info.channels > 2 && settings.foldsSurround ? 2 : analysis.info.channels }
@@ -161,7 +165,41 @@ final class CueStore: ObservableObject {
     func cue(_ id: UUID?) -> MobileCue? { cues.first { $0.id == id } }
     func originalURL(_ cue: MobileCue) -> URL { Self.originals.appendingPathComponent(cue.fileName) }
     func outputURL(_ cue: MobileCue) -> URL? { cue.outputName.map { Self.levelled.appendingPathComponent($0) } }
-    func mode(for cue: MobileCue) -> ContentMode { cue.mode ?? settings.defaultMode }
+    /// The cue's confirmed content type, or CueLevel's suggestion until it's confirmed.
+    func mode(for cue: MobileCue) -> ContentMode { cue.mode ?? suggestion(for: cue).mode }
+
+    /// What CueLevel thinks a cue is, and why: from Apple's sound classifier when it has run, from how continuously the
+    /// cue plays, or the default type in Settings.
+    func suggestion(for c: MobileCue) -> (mode: ContentMode, reason: String) {
+        if let segments = contentSegments(c.id), !segments.isEmpty {
+            let n = Float(segments.count)
+            let speech = Float(segments.filter { $0.speech >= 0.5 }.count) / n, music = Float(segments.filter { $0.music >= 0.5 }.count) / n
+            if music >= 0.5 && speech < 0.2 { return (.music, "Mostly music") }
+            if speech >= 0.5 && music < 0.2 { return (.voice, "Mostly speech") }
+            if speech >= 0.15 && music >= 0.15 { return (.mixed, "Speech and music together") }
+        }
+        let music: Bool = {
+            if let known = playsLikeMusic[c.id] { return known }
+            guard let data = evenOutData(c.id) else { return false }
+            let found = ClipGain.soundsLikeMusic(momentary: data.momentary.map(Double.init))
+            playsLikeMusic[c.id] = found
+            return found
+        }()
+        if music { return (.music, "Plays continuously, like a song") }
+        return (settings.defaultMode, "Your default type in Settings")
+    }
+
+    /// Levels the cues, first asking for the content type of any cue whose type hasn't been confirmed.
+    func requestLevel(_ ids: [UUID]) {
+        let measured = ids.filter { cue($0)?.analysis != nil }
+        guard !measured.isEmpty else { return }
+        if measured.contains(where: { cue($0)?.mode == nil }) { confirming = measured } else { level(measured) }
+    }
+    func confirmTypes(_ choices: [UUID: ContentMode]) {
+        for (id, mode) in choices { update(id) { if $0.mode != mode { $0.mode = mode; $0.evenOutSkipped = nil } } }
+        let ids = confirming; confirming = []
+        level(ids)
+    }
     var busy: Bool { worker != nil }
     var levelledURLs: [URL] { cues.compactMap { outputURL($0) }.filter { FileManager.default.fileExists(atPath: $0.path) } }
     var levelAllIDs: [UUID] { cues.filter { $0.output == nil && $0.state != .failed && $0.state != .levelling }.map(\.id) }
@@ -246,7 +284,25 @@ final class CueStore: ObservableObject {
         guard let i = cues.firstIndex(where: { $0.id == id }) else { return }
         change(&cues[i]); save()
     }
-    func setMode(_ id: UUID, _ mode: ContentMode?) { update(id) { $0.mode = mode; $0.evenOutSkipped = nil } }
+    func setMode(_ id: UUID, _ mode: ContentMode?) {
+        update(id) { $0.mode = mode; $0.evenOutSkipped = nil }
+        if settings.levelOnAdd, mode != nil, let c = cue(id), c.output == nil, c.state == .measured { level([id]) }
+    }
+
+    /// Runs Apple's sound classifier on measured cues, one at a time in the background, for the type suggestion and
+    /// the editor's speech/music lane.
+    func findContent() {
+        guard contentWorker == nil else { return }
+        contentWorker = Task { [weak self] in
+            while let self, let next = self.cues.first(where: { $0.analysis != nil && $0.state != .failed && self.contentSegments($0.id) == nil && !self.contentTried.contains($0.id) }) {
+                self.contentTried.insert(next.id)
+                let url = self.originalURL(next)
+                if let found = await ContentLanes.analyze(url) { self.saveContentSegments(next.id, found); self.objectWillChange.send() }
+            }
+            self?.contentWorker = nil
+        }
+    }
+    private var contentTried: Set<UUID> = []
     func toggle(_ control: PlanSwitch, for id: UUID) {
         update(id) { c in
             switch control {
@@ -284,7 +340,9 @@ final class CueStore: ObservableObject {
         while !cancelled {
             if let next = cues.first(where: { $0.state == .queued }) {
                 await measure(next.id)
-                if settings.levelOnAdd, let c = cue(next.id), c.state == .measured { levelQueue.append(c.id) }
+                // Levelling on add only applies once the cue's type is confirmed.
+                if settings.levelOnAdd, let c = cue(next.id), c.state == .measured, c.mode != nil { levelQueue.append(c.id) }
+                findContent()
                 continue
             }
             if let id = levelQueue.first {
@@ -396,12 +454,18 @@ final class CueStore: ObservableObject {
 
     // MARK: Speech and music lane (kept per cue)
     func contentSegments(_ id: UUID) -> [ContentSegment]? {
-        guard let data = try? Data(contentsOf: Self.details.appendingPathComponent(id.uuidString + "-content.json")) else { return nil }
-        return try? JSONDecoder().decode([ContentSegment].self, from: data)
+        if let cached = contentCache[id] { return cached }
+        guard let data = try? Data(contentsOf: Self.details.appendingPathComponent(id.uuidString + "-content.json")),
+              let found = try? JSONDecoder().decode([ContentSegment].self, from: data) else { return nil }
+        contentCache[id] = found
+        return found
     }
     func saveContentSegments(_ id: UUID, _ segments: [ContentSegment]) {
+        contentCache[id] = segments
         if let data = try? JSONEncoder().encode(segments) { try? data.write(to: Self.details.appendingPathComponent(id.uuidString + "-content.json")) }
     }
+    private var contentCache: [UUID: [ContentSegment]] = [:]
+    private var playsLikeMusic: [UUID: Bool] = [:]
 
     // MARK: Pro editor
     /// What CueLevel would do on its own (the show's trim and Even out settings), as a starting point for the editor.
@@ -436,7 +500,7 @@ final class CueStore: ObservableObject {
             c.fader = draft.gain
             c.trim = false; c.evenOut = false   // the editor's trims and sections are the plan now
         }
-        level([id])
+        requestLevel([id])
     }
     /// Forgets the hand edits; the cue goes back to the show's automatic plan.
     func clearEdits(_ id: UUID) {

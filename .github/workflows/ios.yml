@@ -53,6 +53,8 @@ jobs:
             xcrun simctl terminate "$UDID" com.cuelevel.app || true
             xcrun simctl launch "$UDID" com.cuelevel.app -select 2; sleep 6; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-3-plan.png"
             xcrun simctl terminate "$UDID" com.cuelevel.app || true
+            xcrun simctl launch "$UDID" com.cuelevel.app -confirm; sleep 8; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-3b-confirm.png"
+            xcrun simctl terminate "$UDID" com.cuelevel.app || true
             xcrun simctl launch "$UDID" com.cuelevel.app -levelAll; sleep 60; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-4-levelled.png"
             xcrun simctl terminate "$UDID" com.cuelevel.app || true
             for n in 2 3 4; do xcrun simctl launch "$UDID" com.cuelevel.app -select $n; sleep 6; xcrun simctl io "$UDID" screenshot "$SHOTS/$2-5-result-$n.png"; xcrun simctl terminate "$UDID" com.cuelevel.app || true; done
@@ -76,7 +78,7 @@ jobs:
         run: |
           # GitHub keeps annotations to 4 KB each, 10 per step, 50 per job: small WebP images split into parts.
           mkdir -p build/ann; cd build/screens 2>/dev/null || exit 0
-          for f in ${SHOTS_LIST:-iphone-6-editor.png iphone-8-zoom.png ipad-6-editor.png}; do
+          for f in ${SHOTS_LIST:-iphone-3-plan.png iphone-3b-confirm.png ipad-3b-confirm.png}; do
             [[ -f "$f" ]] || continue
             sips -s format jpeg -s formatOptions ${SHOT_QUALITY:-45} -Z ${SHOT_SIZE:-820} "$f" --out "../ann/${f%.png}.jpg" >/dev/null || continue
             base64 -i "../ann/${f%.png}.jpg" | tr -d '\n' | fold -w 3900 > "../ann/${f%.png}.b64"

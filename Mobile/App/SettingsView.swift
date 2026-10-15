@@ -23,14 +23,14 @@ struct SettingsView: View {
                     Text("−18 LUFS suits most venue PAs and matches CueLevel on the Mac. A cue that would go over the ceiling stays a little quieter instead of being limited.")
                 }
                 Section {
-                    Picker("Content", selection: $store.settings.defaultMode) {
+                    Picker("Default content type", selection: $store.settings.defaultMode) {
                         ForEach([ContentMode.voice, .mixed, .music], id: \.self) { Text($0.label).tag($0) }
                     }
                     Toggle("Even out loud and quiet stretches", isOn: $store.settings.evenOut)
                     Toggle("Trim silence at each end", isOn: $store.settings.trimSilence)
-                    Toggle("Level as soon as a cue is added", isOn: $store.settings.levelOnAdd)
+                    Toggle("Level as soon as a cue's type is confirmed", isOn: $store.settings.levelOnAdd)
                 } header: { Text("New cues") } footer: {
-                    Text("Each cue's content type and plan can be changed on its own page. Music is never evened out.")
+                    Text("Every cue asks you to confirm its type (voice, music + voice or music) before it's levelled. The default is what CueLevel suggests when it can't tell. Music is never evened out.")
                 }
                 Section {
                     Toggle("Fold surround to stereo", isOn: $store.settings.foldsSurround)
@@ -109,8 +109,15 @@ struct CueLevelMobileApp: App {
         let args = ProcessInfo.processInfo.arguments
         func value(_ key: String) -> String? { args.firstIndex(of: key).flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil } }
         if let folder = value("-importFolder"), store.cues.isEmpty { store.add([URL(fileURLWithPath: folder)]) }
+        if args.contains("-confirm") {
+            while store.cues.contains(where: { $0.state == .queued || $0.state == .measuring }) { try? await Task.sleep(nanoseconds: 300_000_000) }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            store.requestLevel(store.levelAllIDs)
+        }
         if args.contains("-levelAll") {
             while store.cues.contains(where: { $0.state == .queued || $0.state == .measuring }) { try? await Task.sleep(nanoseconds: 300_000_000) }
+            // Screenshots: confirm CueLevel's suggestion for every cue, as a person would.
+            for c in store.cues where c.mode == nil { store.update(c.id) { $0.mode = store.suggestion(for: c).mode } }
             store.levelAll()
         }
         if let n = value("-select").flatMap(Int.init), store.cues.indices.contains(n - 1) {

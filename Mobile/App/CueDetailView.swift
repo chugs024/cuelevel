@@ -69,8 +69,12 @@ struct CueDetailView: View {
                         ForEach([ContentMode.voice, .mixed, .music], id: \.self) { Text($0.label).tag($0) }
                     }
                 } label: {
-                    HStack(spacing: 5) { Image(systemName: store.mode(for: cue).symbol); Text(store.mode(for: cue).label); Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)) }
-                        .font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.bone)
+                    HStack(spacing: 5) {
+                        Image(systemName: cue.mode == nil ? "questionmark.circle" : store.mode(for: cue).symbol)
+                        Text(cue.mode == nil ? "Confirm type" : store.mode(for: cue).label)
+                        Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
+                    }
+                        .font(.system(size: 14, weight: .medium)).foregroundStyle(cue.mode == nil ? Theme.changed : Theme.bone)
                         .padding(.horizontal, 10).padding(.vertical, 6).background(Capsule().fill(Theme.raised))
                 }
                 .accessibilityLabel("Content type")
@@ -235,6 +239,8 @@ struct PlanCard: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 14) {
+                CueTypeRow(cue: cue)
+                Divider().overlay(Theme.line)
                 Text("What CueLevel will do").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.bone)
                 if let plan = store.plan(for: cue) {
                     if let good = plan.looksGood {
@@ -273,7 +279,7 @@ struct PlanCard: View {
                             Text(store.progressLabel[cue.id] ?? "Levelling…").font(.system(size: 13)).foregroundStyle(Theme.muted)
                         }
                     } else {
-                        Button { store.level([cue.id]) } label: { Text("Level this cue") }.buttonStyle(CLButton(kind: .hero))
+                        Button { store.requestLevel([cue.id]) } label: { Text("Level this cue") }.buttonStyle(CLButton(kind: .hero))
                             .disabled(store.busy && store.cues.contains { $0.state == .levelling })
                     }
                 }
@@ -340,7 +346,7 @@ struct ResultCard: View {
                     Button { player.showLevelled(!player.showingLevelled); if !player.isPlaying { player.play() } } label: {
                         Label("Before / after", systemImage: "arrow.left.arrow.right").frame(maxWidth: .infinity)
                     }.buttonStyle(CLButton(kind: .secondary))
-                    Button { store.level([cue.id]) } label: { Label("Level again", systemImage: "arrow.clockwise").frame(maxWidth: .infinity) }
+                    Button { store.requestLevel([cue.id]) } label: { Label("Level again", systemImage: "arrow.clockwise").frame(maxWidth: .infinity) }
                         .buttonStyle(CLButton(kind: .secondary)).disabled(cue.state == .levelling)
                 }
                 if cue.state == .levelling {

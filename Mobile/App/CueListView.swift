@@ -28,6 +28,9 @@ struct RootView: View {
             if case .success(let urls) = result { store.add(urls) }
         }
         .sheet(isPresented: $settingsOpen) { SettingsView().environmentObject(store).environmentObject(pro) }
+        .sheet(isPresented: Binding(get: { !store.confirming.isEmpty }, set: { if !$0 { store.confirming = [] } })) {
+            TypeConfirmSheet().environmentObject(store)
+        }
         .alert("CueLevel", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("OK") { store.error = nil }
         } message: { Text(store.error ?? "") }
@@ -69,7 +72,7 @@ struct CueListView: View {
                                     Button(role: .destructive) { store.remove([cue.id]) } label: { Label("Remove", systemImage: "trash") }
                                 }
                                 .contextMenu {
-                                    Button { store.level([cue.id]) } label: { Label(cue.output == nil ? "Level this cue" : "Level again", systemImage: "slider.horizontal.3") }
+                                    Button { store.requestLevel([cue.id]) } label: { Label(cue.output == nil ? "Level this cue" : "Level again", systemImage: "slider.horizontal.3") }
                                         .disabled(cue.analysis == nil)
                                     if let url = store.outputURL(cue) { ShareLink(item: url) { Label("Share levelled copy", systemImage: "square.and.arrow.up") } }
                                     Button(role: .destructive) { store.remove([cue.id]) } label: { Label("Remove", systemImage: "trash") }
@@ -142,7 +145,7 @@ struct CueListView: View {
                     Button { store.stop() } label: { Label("Stop", systemImage: "stop.fill") }.buttonStyle(CLButton(kind: .secondary))
                 }
                 let ids = store.levelAllIDs.filter { id in store.cue(id)?.analysis != nil }
-                Button { store.levelAll() } label: {
+                Button { store.requestLevel(ids) } label: {
                     Text(ids.isEmpty ? "All cues levelled" : "Level all (\(ids.count))")
                 }
                 .buttonStyle(CLButton(kind: .hero))
