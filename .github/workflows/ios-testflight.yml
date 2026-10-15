@@ -16,6 +16,11 @@ on:
         default: "both"
         type: choice
         options: [both, iphone-ipad, mac]
+      revoke_build_certificates:
+        description: "Revoke the throwaway 'Created via API' development certificates these builds leave behind (only with the account owner's OK)"
+        required: true
+        default: false
+        type: boolean
 env:
   # Not secret: they identify the key. Only the .p8 file (ASC_KEY_P8) is a secret.
   KEY_ID: BYLJRNNN9R
@@ -124,7 +129,7 @@ jobs:
         # Xcode makes a development certificate on every fresh build machine; its private key is thrown away with the
         # machine, so the certificate can never be used again. Apple allows only a few, so they're revoked here.
         # Only certificates named "Created via API" (made by these builds) are touched; your own are left alone.
-        if: always() && steps.wanted.outputs.go == 'true'
+        if: always() && steps.wanted.outputs.go == 'true' && inputs.revoke_build_certificates
         run: |
           [[ -f "$KEY_PATH" ]] || exit 0
           pip3 install --quiet --break-system-packages pyjwt cryptography >/dev/null 2>&1 || pip3 install --quiet pyjwt cryptography >/dev/null
