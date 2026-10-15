@@ -190,6 +190,7 @@ struct CueRow: View {
                     if cue.analysis != nil {
                         if store.needsTypeCheck(cue) {
                             Label("Check type", systemImage: "exclamationmark.circle.fill").labelStyle(.titleAndIcon).foregroundStyle(Theme.changed)
+                                .lineLimit(1).fixedSize()
                         } else {
                             Text(store.mode(for: cue).label).foregroundStyle(Theme.text)
                         }

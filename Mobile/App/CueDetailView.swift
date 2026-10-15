@@ -70,11 +70,11 @@ struct CueDetailView: View {
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        Image(systemName: cue.mode == nil ? "questionmark.circle" : store.mode(for: cue).symbol)
-                        Text(cue.mode == nil ? "Confirm type" : store.mode(for: cue).label)
+                        Image(systemName: store.needsTypeCheck(cue) ? "exclamationmark.circle.fill" : store.mode(for: cue).symbol)
+                        Text(store.mode(for: cue).label + (store.needsTypeCheck(cue) ? "?" : ""))
                         Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
                     }
-                        .font(.system(size: 14, weight: .medium)).foregroundStyle(cue.mode == nil ? Theme.changed : Theme.bone)
+                        .font(.system(size: 14, weight: .medium)).foregroundStyle(store.needsTypeCheck(cue) ? Theme.changed : Theme.bone)
                         .padding(.horizontal, 10).padding(.vertical, 6).background(Capsule().fill(Theme.raised))
                 }
                 .accessibilityLabel("Content type")
