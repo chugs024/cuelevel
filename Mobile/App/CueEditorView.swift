@@ -170,10 +170,14 @@ struct CueEditorView: View {
                     .buttonStyle(ToolButton()).accessibilityLabel("Delete section")
             } else {
                 Button { model.addSection(at: player.time > 0 ? player.time : (model.window.lowerBound + model.window.upperBound) / 2) } label: {
-                    Label("Section at playhead", systemImage: "plus").font(.system(size: 13, weight: .medium))
+                    Label("New section", systemImage: "plus").font(.system(size: 13, weight: .medium)).lineLimit(1).fixedSize()
                 }.buttonStyle(ToolButton())
-                Text("Drag sideways to mark a stretch, then drag it up or down")
-                    .font(.system(size: 11.5)).foregroundStyle(Theme.dim).lineLimit(1).minimumScaleFactor(0.75)
+                // The hint shows only where it fits in full.
+                ViewThatFits(in: .horizontal) {
+                    Text("Drag sideways to mark a stretch, then drag it up or down").font(.system(size: 11.5)).foregroundStyle(Theme.dim).fixedSize()
+                    Text("Drag sideways to mark a stretch").font(.system(size: 11.5)).foregroundStyle(Theme.dim).fixedSize()
+                    Color.clear.frame(width: 0, height: 0)
+                }
             }
             Spacer(minLength: 6)
             HStack(spacing: 0) {
