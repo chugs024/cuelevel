@@ -137,6 +137,21 @@ struct CueEditorView: View {
                 } label: { Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text).frame(width: 34, height: 30) }
                     .accessibilityLabel("More")
             }
+            // The type the cue will be levelled as, next to the button that levels it.
+            Menu {
+                Picker("Level as", selection: Binding(get: { store.cue(model.cueID).map { store.mode(for: $0) } ?? .voice },
+                                                      set: { m in store.update(model.cueID) { $0.mode = m; $0.evenOutSkipped = nil } })) {
+                    ForEach([ContentMode.voice, .mixed, .music], id: \.self) { Label($0.label, systemImage: $0.symbol).tag($0) }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("As " + (store.cue(model.cueID).map { store.mode(for: $0).label.lowercased() } ?? "voice")).font(.system(size: 13, weight: .semibold)).lineLimit(1).fixedSize()
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                }
+                .foregroundStyle(store.cue(model.cueID).map { store.needsTypeCheck($0) } == true ? Theme.changed : Theme.text)
+                .padding(.horizontal, 10).frame(height: 30).background(RoundedRectangle(cornerRadius: 7).fill(Theme.raised))
+            }
+            .accessibilityLabel("Level as")
             Button { player.stop(); store.saveEdits(model.cueID, model.draft); dismiss() } label: {
                 Text("Save & level").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.onGood)
                     .padding(.horizontal, 14).frame(height: 32).background(RoundedRectangle(cornerRadius: 8).fill(Theme.good))

@@ -239,8 +239,6 @@ struct PlanCard: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 14) {
-                CueTypeRow(cue: cue)
-                Divider().overlay(Theme.line)
                 Text("What CueLevel will do").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.bone)
                 if let plan = store.plan(for: cue) {
                     if let good = plan.looksGood {
@@ -279,7 +277,8 @@ struct PlanCard: View {
                             Text(store.progressLabel[cue.id] ?? "Levelling…").font(.system(size: 13)).foregroundStyle(Theme.muted)
                         }
                     } else {
-                        Button { store.requestLevel([cue.id]) } label: { Text("Level this cue") }.buttonStyle(CLButton(kind: .hero))
+                        LevelAsRow(cue: cue)
+                        Button { store.requestLevel([cue.id]) } label: { Text("Level as \(store.mode(for: cue).label.lowercased())") }.buttonStyle(CLButton(kind: .hero))
                             .disabled(store.busy && store.cues.contains { $0.state == .levelling })
                     }
                 }
@@ -341,6 +340,24 @@ struct ResultCard: View {
                         ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up").font(.system(size: 14, weight: .semibold)) }.tint(Theme.good)
                     }
                     .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Theme.field))
+                }
+                // The type it was levelled as, changeable right here before levelling again.
+                HStack(spacing: 8) {
+                    Text("Levelled as").font(.system(size: 13.5)).foregroundStyle(Theme.muted)
+                    Menu {
+                        Picker("Type", selection: Binding(get: { store.mode(for: cue) }, set: { store.setMode(cue.id, $0) })) {
+                            ForEach([ContentMode.voice, .mixed, .music], id: \.self) { Label($0.label, systemImage: $0.symbol).tag($0) }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text((cue.output?.settings.mode ?? store.mode(for: cue)).label).font(.system(size: 13.5, weight: .semibold))
+                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
+                        }.foregroundStyle(Theme.bone)
+                    }
+                    if let used = cue.output?.settings.mode, used != store.mode(for: cue) {
+                        Text("· now \(store.mode(for: cue).label.lowercased()), level again to apply").font(.system(size: 12.5)).foregroundStyle(Theme.changed).lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    Spacer()
                 }
                 HStack(spacing: 10) {
                     Button { player.showLevelled(!player.showingLevelled); if !player.isPlaying { player.play() } } label: {

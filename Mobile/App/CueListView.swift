@@ -140,6 +140,23 @@ struct CueListView: View {
             if !store.status.isEmpty {
                 Text(store.status).font(.system(size: 13)).foregroundStyle(Theme.muted).frame(maxWidth: .infinity, alignment: .leading)
             }
+            // What Level all will treat each cue as, with the ones CueLevel couldn't tell about called out.
+            let pending = store.levelAllIDs.compactMap { store.cue($0) }.filter { $0.analysis != nil }
+            if !pending.isEmpty {
+                let counts = [ContentMode.voice, .mixed, .music].compactMap { m -> String? in
+                    let n = pending.filter { store.mode(for: $0) == m }.count
+                    return n == 0 ? nil : "\(n) \(m.label.lowercased())"
+                }
+                let check = pending.filter { store.needsTypeCheck($0) }.count
+                HStack(spacing: 8) {
+                    Text("Level as: " + counts.joined(separator: ", ")).font(.system(size: 13)).foregroundStyle(Theme.text).lineLimit(1).minimumScaleFactor(0.8)
+                    if check > 0 {
+                        Label("\(check) to check", systemImage: "exclamationmark.circle.fill").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.changed)
+                    }
+                    Spacer()
+                    Button("Review types") { store.confirming = pending.map(\.id) }.font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.good)
+                }
+            }
             HStack(spacing: 10) {
                 if store.busy {
                     Button { store.stop() } label: { Label("Stop", systemImage: "stop.fill") }.buttonStyle(CLButton(kind: .secondary))
@@ -170,6 +187,13 @@ struct CueRow: View {
                     Text(cue.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.bone).lineLimit(1).truncationMode(.middle)
                 }
                 HStack(spacing: 8) {
+                    if cue.analysis != nil {
+                        if store.needsTypeCheck(cue) {
+                            Label("Check type", systemImage: "exclamationmark.circle.fill").labelStyle(.titleAndIcon).foregroundStyle(Theme.changed)
+                        } else {
+                            Text(store.mode(for: cue).label).foregroundStyle(Theme.text)
+                        }
+                    }
                     if let d = cue.analysis?.info.duration { Text(clock(d)) }
                     if let l = cue.shownLoudness { Text("\(lufsText(l)) LUFS") }
                     if cue.state == .failed { Text(cue.message).lineLimit(1).foregroundStyle(Theme.hot.opacity(0.9)) }

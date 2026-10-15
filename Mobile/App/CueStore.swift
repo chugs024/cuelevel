@@ -94,7 +94,7 @@ final class CueStore: ObservableObject {
     @Published var status = ""
     /// Set to open a cue's editor from outside its page (the build server's screenshots).
     @Published var openEditorFor: UUID?
-    /// Cues waiting for their content type to be confirmed before they're levelled (2.1).
+    /// Cues shown in the "check each cue's type" sheet (2.1), opened from the Level all bar.
     @Published var confirming: [UUID] = []
     private var contentWorker: Task<Void, Never>?
     let library: ReferenceLibrary
@@ -167,16 +167,18 @@ final class CueStore: ObservableObject {
     func outputURL(_ cue: MobileCue) -> URL? { cue.outputName.map { Self.levelled.appendingPathComponent($0) } }
     /// The cue's confirmed content type, or CueLevel's suggestion until it's confirmed.
     func mode(for cue: MobileCue) -> ContentMode { cue.mode ?? suggestion(for: cue).mode }
+    /// True when CueLevel couldn't tell what the cue is and fell back on the default type: worth a look before levelling.
+    func needsTypeCheck(_ c: MobileCue) -> Bool { c.mode == nil && !suggestion(for: c).sure }
 
     /// What CueLevel thinks a cue is, and why: from Apple's sound classifier when it has run, from how continuously the
     /// cue plays, or the default type in Settings.
-    func suggestion(for c: MobileCue) -> (mode: ContentMode, reason: String) {
+    func suggestion(for c: MobileCue) -> (mode: ContentMode, reason: String, sure: Bool) {
         if let segments = contentSegments(c.id), !segments.isEmpty {
             let n = Float(segments.count)
             let speech = Float(segments.filter { $0.speech >= 0.5 }.count) / n, music = Float(segments.filter { $0.music >= 0.5 }.count) / n
-            if music >= 0.5 && speech < 0.2 { return (.music, "Mostly music") }
-            if speech >= 0.5 && music < 0.2 { return (.voice, "Mostly speech") }
-            if speech >= 0.15 && music >= 0.15 { return (.mixed, "Speech and music together") }
+            if music >= 0.5 && speech < 0.2 { return (.music, "Mostly music", true) }
+            if speech >= 0.5 && music < 0.2 { return (.voice, "Mostly speech", true) }
+            if speech >= 0.15 && music >= 0.15 { return (.mixed, "Speech and music together", true) }
         }
         let music: Bool = {
             if let known = playsLikeMusic[c.id] { return known }
@@ -185,15 +187,19 @@ final class CueStore: ObservableObject {
             playsLikeMusic[c.id] = found
             return found
         }()
-        if music { return (.music, "Plays continuously, like a song") }
-        return (settings.defaultMode, "Your default type in Settings")
+        if music { return (.music, "Plays continuously, like a song", true) }
+        return (settings.defaultMode, "Couldn't tell, so your default type", false)
     }
 
-    /// Levels the cues, first asking for the content type of any cue whose type hasn't been confirmed.
+    /// Levels the cues as their type is shown next to the Level button (chosen, or CueLevel's suggestion).
     func requestLevel(_ ids: [UUID]) {
         let measured = ids.filter { cue($0)?.analysis != nil }
-        guard !measured.isEmpty else { return }
-        if measured.contains(where: { cue($0)?.mode == nil }) { confirming = measured } else { level(measured) }
+        if !measured.isEmpty { level(measured) }
+    }
+    /// Saves the types chosen in the review sheet without levelling.
+    func saveTypes(_ choices: [UUID: ContentMode]) {
+        for (id, mode) in choices { update(id) { if $0.mode != mode { $0.mode = mode; $0.evenOutSkipped = nil } } }
+        confirming = []
     }
     func confirmTypes(_ choices: [UUID: ContentMode]) {
         for (id, mode) in choices { update(id) { if $0.mode != mode { $0.mode = mode; $0.evenOutSkipped = nil } } }

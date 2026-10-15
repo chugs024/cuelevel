@@ -1,8 +1,9 @@
 import SwiftUI
 
-// Before a cue is levelled, its content type is confirmed: voice, music + voice, or music. The type decides whether
-// CueLevel evens out loud and quiet stretches (voice), only clear jumps (music + voice) or leaves the cue's own
-// dynamics alone (music). CueLevel suggests one, with its reason; the person confirms it.
+// A cue's content type (voice, music + voice, or music) decides whether CueLevel evens out loud and quiet stretches
+// (voice), only clear jumps (music + voice) or leaves the cue's own dynamics alone (music). CueLevel suggests one with
+// its reason, and the type is always shown next to the Level button, where it can be changed; a cue CueLevel couldn't
+// tell about is flagged "Check type".
 
 extension ContentMode {
     /// What levelling does for this type, in a sentence.
@@ -54,8 +55,7 @@ struct TypeConfirmSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(ids.count == 1 ? "Confirm what's in this cue before it's levelled. It decides whether CueLevel evens it out or keeps its dynamics."
-                                        : "Confirm what's in each cue before they're levelled. It decides whether CueLevel evens a cue out or keeps its dynamics.")
+                    Text("The type decides whether CueLevel evens a cue out or keeps its own dynamics. CueLevel's picks are filled in; change any that are wrong.")
                         .font(.system(size: 14.5)).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
                     ForEach(ids, id: \.self) { id in
                         if let cue = store.cue(id) { row(cue) }
@@ -73,9 +73,12 @@ struct TypeConfirmSheet: View {
                 .background(Theme.base)
             }
             .background(Theme.base.ignoresSafeArea())
-            .navigationTitle(ids.count == 1 ? "What's in this cue?" : "What's in these cues?")
+            .navigationTitle("Check each cue's type")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { store.confirming = []; dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { store.confirming = []; dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Save") { store.saveTypes(choices); dismiss() } }
+            }
             .onAppear {
                 for id in ids { if let c = store.cue(id) { choices[id] = c.mode ?? store.suggestion(for: c).mode } }
             }
@@ -94,34 +97,32 @@ struct TypeConfirmSheet: View {
                 if let a = cue.analysis { Text(clock(a.info.duration)).font(.system(size: 13).monospacedDigit()).foregroundStyle(Theme.muted) }
             }
             TypePicker(selection: Binding(get: { choices[cue.id] }, set: { choices[cue.id] = $0 }), suggested: suggestion.mode)
-            Text(cue.mode == nil ? "Suggested \(suggestion.mode.label.lowercased()): \(suggestion.reason.lowercased()). " + chosen.levellingEffect : chosen.levellingEffect)
-                .font(.system(size: 12.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+            Text(cue.mode == nil ? "\(suggestion.reason). " + chosen.levellingEffect : chosen.levellingEffect)
+                .font(.system(size: 12.5)).foregroundStyle(cue.mode == nil && !suggestion.sure ? Theme.changed : Theme.muted).fixedSize(horizontal: false, vertical: true)
         }
         .padding(14).background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.line, lineWidth: 1))
     }
 }
 
-/// The type row at the top of a cue's plan: confirm it here, or when levelling.
-struct CueTypeRow: View {
+/// "Level as": the cue's type, right above its Level button, with what that type does and why CueLevel picked it.
+struct LevelAsRow: View {
     @EnvironmentObject var store: CueStore
     let cue: MobileCue
     var body: some View {
         let suggestion = store.suggestion(for: cue)
-        VStack(alignment: .leading, spacing: 10) {
+        let shown = cue.mode ?? suggestion.mode
+        let unsure = cue.mode == nil && !suggestion.sure
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("What's in this cue?").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.bone)
+                Text("Level as").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.bone)
                 Spacer()
-                if cue.mode == nil {
-                    Text("Not confirmed").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.changed)
-                } else {
-                    Label("Confirmed", systemImage: "checkmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.good)
-                }
+                if unsure { Label("Check type", systemImage: "exclamationmark.circle.fill").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.changed) }
+                else if cue.mode == nil { Text("CueLevel's pick").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.muted) }
             }
-            TypePicker(selection: Binding(get: { cue.mode }, set: { store.setMode(cue.id, $0) }), suggested: suggestion.mode)
-            Text(cue.mode == nil ? "Suggested \(suggestion.mode.label.lowercased()): \(suggestion.reason.lowercased()). Tap to confirm."
-                                 : (cue.mode ?? suggestion.mode).levellingEffect)
-                .font(.system(size: 12.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+            TypePicker(selection: Binding(get: { shown }, set: { store.setMode(cue.id, $0) }), suggested: suggestion.mode)
+            Text(cue.mode == nil ? "\(suggestion.reason). " + shown.levellingEffect : shown.levellingEffect)
+                .font(.system(size: 12.5)).foregroundStyle(unsure ? Theme.changed : Theme.muted).fixedSize(horizontal: false, vertical: true)
         }
     }
 }
