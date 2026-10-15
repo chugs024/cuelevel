@@ -24,6 +24,7 @@ jobs:
   upload:
     strategy:
       fail-fast: false
+      max-parallel: 1   # one at a time: each build tidies up the signing certificate it made
       matrix:
         include:
           - platform: iphone-ipad
@@ -119,6 +120,30 @@ jobs:
             grep -iE "error|failed" upload.log | head -15 | while IFS= read -r l; do echo "::error::$l"; done; exit 1
           fi
           echo "::notice::Uploaded CueLevel ${{ inputs.version }} for ${{ matrix.platform }} (build $((100 + GITHUB_RUN_NUMBER))). It appears in TestFlight after Apple's processing, usually 10–30 minutes."
+      - name: Revoke this build machine's development certificate
+        # Xcode makes a development certificate on every fresh build machine; its private key is thrown away with the
+        # machine, so the certificate can never be used again. Apple allows only a few, so they're revoked here.
+        # Only certificates named "Created via API" (made by these builds) are touched; your own are left alone.
+        if: always() && steps.wanted.outputs.go == 'true'
+        run: |
+          [[ -f "$KEY_PATH" ]] || exit 0
+          pip3 install --quiet --break-system-packages pyjwt cryptography >/dev/null 2>&1 || pip3 install --quiet pyjwt cryptography >/dev/null
+          python3 - <<'PY'
+          import jwt, time, json, os, urllib.request
+          key = open(os.environ["KEY_PATH"]).read()
+          token = jwt.encode({"iss": os.environ["ISSUER"], "iat": int(time.time()), "exp": int(time.time()) + 600, "aud": "appstoreconnect-v1"},
+                             key, algorithm="ES256", headers={"kid": os.environ["KEY_ID"], "typ": "JWT"})
+          def call(method, url):
+              req = urllib.request.Request(url, method=method, headers={"Authorization": f"Bearer {token}"})
+              with urllib.request.urlopen(req) as r: return json.loads(r.read() or b"{}")
+          base = "https://api.appstoreconnect.apple.com/v1/certificates"
+          found = call("GET", base + "?filter[certificateType]=DEVELOPMENT,MAC_APP_DEVELOPMENT,IOS_DEVELOPMENT&limit=200")["data"]
+          for c in found:
+              a = c["attributes"]
+              if a.get("name") == "Created via API":
+                  call("DELETE", f"{base}/{c['id']}")
+                  print("Revoked build-machine certificate", c["id"], a.get("certificateType"))
+          PY
       - name: Remove the key
         if: always()
         run: rm -rf "$RUNNER_TEMP/keys" ~/private_keys
