@@ -1,0 +1,42 @@
+name: Revoke build-machine certificates
+# One-off clean-up, run by hand with the account owner's OK: revokes the development certificates named
+# "Created via API" that cloud builds left behind (their private keys were deleted with the build machines, so they
+# can never be used). Certificates with any other name, and all distribution certificates, are left alone.
+on:
+  workflow_dispatch:
+env:
+  KEY_ID: BYLJRNNN9R
+  ISSUER: 143e20b1-9ebc-48d7-ac2c-7b52fe48ed2b
+jobs:
+  revoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Revoke
+        env:
+          KEY: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          pip3 install --quiet pyjwt cryptography
+          printf '%s\n' "$KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' > key.p8
+          python3 - <<'PY'
+          import jwt, time, json, os, urllib.request
+          key = open("key.p8").read()
+          token = jwt.encode({"iss": os.environ["ISSUER"], "iat": int(time.time()), "exp": int(time.time()) + 600, "aud": "appstoreconnect-v1"},
+                             key, algorithm="ES256", headers={"kid": os.environ["KEY_ID"], "typ": "JWT"})
+          def call(method, url):
+              req = urllib.request.Request(url, method=method, headers={"Authorization": f"Bearer {token}"})
+              with urllib.request.urlopen(req) as r: return json.loads(r.read() or b"{}")
+          base = "https://api.appstoreconnect.apple.com/v1/certificates"
+          certs = call("GET", base + "?limit=200")["data"]
+          revoked = 0
+          for c in certs:
+              a = c["attributes"]; name = (a.get("name") or "") + " " + (a.get("displayName") or "")
+              dev = a.get("certificateType") in ("DEVELOPMENT", "IOS_DEVELOPMENT", "MAC_APP_DEVELOPMENT")
+              if dev and "Created via API" in name:
+                  call("DELETE", f"{base}/{c['id']}"); revoked += 1
+                  print("Revoked:", a.get("certificateType"), "|", name.strip(), "| expires", a.get("expirationDate"))
+              else:
+                  print("Kept:", a.get("certificateType"), "|", name.strip())
+          print(f"::notice::Revoked {revoked} build-machine certificates; kept {len(certs) - revoked}.")
+          PY
+          rm -f key.p8

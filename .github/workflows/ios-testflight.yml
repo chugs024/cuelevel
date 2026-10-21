@@ -83,11 +83,9 @@ jobs:
         run: |
           set -o pipefail
           BUILD=$((100 + GITHUB_RUN_NUMBER))
-          # The archive is signed locally ("Sign to Run Locally", entitlements included) so no development certificate
-          # is needed; the export step then signs it with Apple's cloud-managed distribution certificate.
           xcodebuild -project Mobile/CueLevelMobile.xcodeproj -scheme CueLevel -configuration Release -destination '${{ matrix.destination }}' \
-            -archivePath build/CueLevel.xcarchive \
-            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- PROVISIONING_PROFILE_SPECIFIER= PROVISIONING_PROFILE= DEVELOPMENT_TEAM=327ABFB3W2 \
+            -archivePath build/CueLevel.xcarchive -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" archive 2>&1 | tee archive.log | grep -E "error:|ARCHIVE|Signing" || true
           grep -q "ARCHIVE SUCCEEDED" archive.log || { grep -E "error:" archive.log | head -15 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
       - name: Export the app
@@ -144,10 +142,12 @@ jobs:
               req = urllib.request.Request(url, method=method, headers={"Authorization": f"Bearer {token}"})
               with urllib.request.urlopen(req) as r: return json.loads(r.read() or b"{}")
           base = "https://api.appstoreconnect.apple.com/v1/certificates"
-          found = call("GET", base + "?filter[certificateType]=DEVELOPMENT,MAC_APP_DEVELOPMENT,IOS_DEVELOPMENT&limit=200")["data"]
+          found = call("GET", base + "?limit=200")["data"]
+          for c in found: print("Certificate:", c["attributes"].get("certificateType"), "|", c["attributes"].get("name"), "|", c["attributes"].get("displayName"))
+          found = [c for c in found if c["attributes"].get("certificateType") in ("DEVELOPMENT", "IOS_DEVELOPMENT", "MAC_APP_DEVELOPMENT")]
           for c in found:
               a = c["attributes"]
-              if a.get("name") == "Created via API":
+              if "Created via API" in (a.get("name") or "") or "Created via API" in (a.get("displayName") or ""):
                   call("DELETE", f"{base}/{c['id']}")
                   print("Revoked build-machine certificate", c["id"], a.get("certificateType"))
           PY
