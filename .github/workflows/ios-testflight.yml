@@ -19,7 +19,7 @@ on:
       revoke_build_certificates:
         description: "Revoke the throwaway 'Created via API' development certificates these builds leave behind (only with the account owner's OK)"
         required: true
-        default: false
+        default: true
         type: boolean
 env:
   # Not secret: they identify the key. Only the .p8 file (ASC_KEY_P8) is a secret.
