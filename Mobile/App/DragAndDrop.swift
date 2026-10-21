@@ -25,9 +25,20 @@ enum DropImport {
         return found
     }
 
+    /// A file or folder dropped from Finder or Files. On a sandboxed Mac the dropped item is only reliably readable
+    /// inside this callback, so it's copied to a temporary folder right here (CueLevel then copies it into the show).
     private static func fileURL(_ provider: NSItemProvider) async -> URL? {
         await withCheckedContinuation { done in
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in done.resume(returning: url?.isFileURL == true ? url : nil) }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.isFileURL else { done.resume(returning: nil); return }
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Dropped/\(UUID().uuidString)", isDirectory: true)
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let target = folder.appendingPathComponent(url.lastPathComponent)
+                do { try FileManager.default.copyItem(at: url, to: target); done.resume(returning: target) }
+                catch { done.resume(returning: FileManager.default.isReadableFile(atPath: url.path) ? url : nil) }
+            }
         }
     }
 
@@ -56,6 +67,8 @@ struct CueDropTarget: ViewModifier {
                 Task { @MainActor in
                     let urls = await DropImport.urls(from: providers)
                     if urls.isEmpty { store.error = "Those items aren't audio or video files CueLevel can level." } else { store.add(urls) }
+                    // The temporary copies have been copied into the show; remove them.
+                    try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("Dropped", isDirectory: true))
                 }
                 return true
             }
