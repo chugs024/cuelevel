@@ -94,6 +94,8 @@ final class CueStore: ObservableObject {
     @Published var status = ""
     /// Set to open a cue's editor from outside its page (the build server's screenshots).
     @Published var openEditorFor: UUID?
+    /// Bumped by the Add Cues… menu command (⌘O) to open the file picker.
+    @Published var importRequests = 0
     /// Cues shown in the "check each cue's type" sheet (2.1), opened from the Level all bar.
     @Published var confirming: [UUID] = []
     private var contentWorker: Task<Void, Never>?

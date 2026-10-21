@@ -99,6 +99,20 @@ struct CueLevelMobileApp: App {
                 .onOpenURL { url in store.add([url]) }
                 .task { await DemoHooks.run(store) }
         }
+        .commands {
+            // Mac menu bar (and the iPad keyboard shortcut list).
+            CommandGroup(replacing: .newItem) {
+                Button("Add Cues…") { store.importRequests += 1 }.keyboardShortcut("o")
+            }
+            CommandMenu("Cues") {
+                Button("Level All") { store.requestLevel(store.levelAllIDs) }.keyboardShortcut("l", modifiers: [.command, .shift])
+                    .disabled(store.levelAllIDs.isEmpty)
+                Button("Review Types…") { store.confirming = store.levelAllIDs.filter { store.cue($0)?.analysis != nil } }
+                    .disabled(store.levelAllIDs.isEmpty)
+                Divider()
+                Button("Stop") { store.stop() }.keyboardShortcut(".", modifiers: .command).disabled(!store.busy)
+            }
+        }
     }
 }
 

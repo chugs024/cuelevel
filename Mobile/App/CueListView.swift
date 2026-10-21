@@ -23,7 +23,9 @@ struct RootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .acceptsDroppedCues()
         .tint(Theme.good)
+        .onChange(of: store.importRequests) { importing = true }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.audio, .movie, .folder], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { store.add(urls) }
         }
@@ -65,6 +67,7 @@ struct CueListView: View {
                     Section {
                         ForEach(Array(shown.enumerated()), id: \.element.id) { _, cue in
                             CueRow(cue: cue, number: (store.cues.firstIndex { $0.id == cue.id } ?? 0) + 1)
+                                .draggableLevelledFile(store.outputURL(cue))
                                 .tag(cue.id)
                                 .listRowBackground(store.selection == cue.id ? Theme.raised : Theme.base)
                                 .listRowSeparatorTint(Theme.line)
@@ -225,7 +228,7 @@ struct Onboarding: View {
                         .font(.system(size: 16)).foregroundStyle(Theme.text)
                 }
                 VStack(spacing: 12) {
-                    step(1, "Add your cues", "Pick audio or video from Files, iCloud Drive or another app. Each one is measured as it arrives.")
+                    step(1, "Add your cues", "Drag audio, video or a folder onto CueLevel, or pick them from Files or iCloud Drive. Each one is measured as it arrives.")
                     step(2, "Check the plan", "CueLevel shows what it would change in each cue and why, before it changes anything.")
                     step(3, "Level and share", "Levelled copies land in Files › CueLevel › Levelled. Your originals are never changed.")
                 }
